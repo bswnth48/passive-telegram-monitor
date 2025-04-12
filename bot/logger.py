@@ -4,7 +4,7 @@ import os
 import aiosqlite
 import json # For serializing entities/media info
 from datetime import datetime, date, time, timedelta
-from typing import Dict, List, Tuple # Added for type hints
+from typing import Dict, List, Tuple, Any # Added Any
 
 logger = logging.getLogger(__name__)
 
@@ -157,63 +157,42 @@ async def get_unforwarded_summary() -> Dict[str, int]:
         logger.error(f"Unexpected error getting unforwarded summary: {e}", exc_info=True)
     return summary
 
-async def get_messages_today() -> List[str]:
-    """Retrieves the text content of messages logged today."""
+async def get_messages_since(timestamp: datetime) -> List[Dict[str, Any]]:
+    """Retrieves message details logged since the given timestamp."""
     messages = []
     try:
-        today_start = datetime.combine(date.today(), time.min)
         async with aiosqlite.connect(DB_PATH) as db:
+            # Select relevant fields for summarization context
             query = """
-            SELECT m.text, c.title as chat_title, u.first_name as sender_name
+            SELECT m.timestamp, m.text, m.entities, m.media_type,
+                   c.title as chat_title, c.type as chat_type,
+                   u.first_name as sender_name, u.is_bot as sender_is_bot
             FROM messages m
             LEFT JOIN chats c ON m.chat_id = c.chat_id
             LEFT JOIN users u ON m.sender_id = u.user_id
-            WHERE m.timestamp >= ? AND m.text IS NOT NULL AND LENGTH(m.text) > 0
+            WHERE m.timestamp > ? -- Fetch messages *after* the last check
             ORDER BY m.timestamp ASC;
             """
-            async with db.execute(query, (today_start,)) as cursor:
-                async for row in cursor:
-                    text, chat_title, sender_name = row
-                    # Simple formatting for context
-                    prefix = f"[{chat_title or 'Unknown Chat'}/{sender_name or 'Unknown Sender'}]: "
-                    messages.append(prefix + text)
-            logger.info(f"Retrieved {len(messages)} messages from today for summarization.")
-    except sqlite3.Error as e:
-        logger.error(f"DB error getting today's messages: {e}", exc_info=True)
-    except Exception as e:
-        logger.error(f"Unexpected error getting today's messages: {e}", exc_info=True)
-    return messages
-
-async def get_new_messages_summary_since(timestamp: datetime) -> Dict[str, any]:
-    """Retrieves a summary of new messages logged since the given timestamp."""
-    summary = {
-        "total_new_messages": 0,
-        "messages_by_chat": {}
-    }
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            query = """
-            SELECT c.title, c.username, m.chat_id, COUNT(m.message_id) as new_count
-            FROM messages m
-            JOIN chats c ON m.chat_id = c.chat_id
-            WHERE m.timestamp > ?
-            GROUP BY m.chat_id
-            ORDER BY new_count DESC;
-            """
-            total_count = 0
             async with db.execute(query, (timestamp,)) as cursor:
                 async for row in cursor:
-                    title, username, chat_id, count = row
-                    chat_display = title or username or f"ID:{chat_id}"
-                    summary["messages_by_chat"][chat_display] = count
-                    total_count += count
-            summary["total_new_messages"] = total_count
-            logger.info(f"Found {total_count} new messages since {timestamp} across {len(summary['messages_by_chat'])} chats.")
+                    # Construct a dictionary for each message
+                    msg_data = {
+                        "timestamp": row[0],
+                        "text": row[1],
+                        "entities": json.loads(row[2]) if row[2] else None,
+                        "media_type": row[3],
+                        "chat_title": row[4],
+                        "chat_type": row[5],
+                        "sender_name": row[6],
+                        "sender_is_bot": bool(row[7])
+                    }
+                    messages.append(msg_data)
+            logger.info(f"Retrieved {len(messages)} messages since {timestamp} for summarization.")
     except sqlite3.Error as e:
         logger.error(f"DB error getting messages since {timestamp}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Unexpected error getting messages since {timestamp}: {e}", exc_info=True)
-    return summary
+    return messages
 
 # Example test remains largely the same but needs updates if testing new fields
 if __name__ == '__main__':

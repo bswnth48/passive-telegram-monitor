@@ -11,13 +11,12 @@ class Config:
     api_id: int
     api_hash: str
     bot_name: str
-    webhook_url: str
     webhook_interval_minutes: int
     telegram_groups: List[str]
-    # AI Settings
     ai_api_base: Optional[str] = None
     ai_api_key: Optional[str] = None
     ai_model_name: str = "gemini-pro"
+    webhook_url: Optional[str] = None
 
 def load_config() -> Config:
     """Loads configuration from environment variables."""
@@ -28,9 +27,9 @@ def load_config() -> Config:
     api_id_str = os.getenv("API_ID")
     api_hash = os.getenv("API_HASH")
     bot_name = os.getenv("BOT_NAME", "DefaultBotName")
-    webhook_url = os.getenv("WEBHOOK_URL")
-    webhook_interval_str = os.getenv("WEBHOOK_INTERVAL_MINUTES", "60")
+    webhook_interval_str = os.getenv("WEBHOOK_INTERVAL_MINUTES", "30")
     telegram_groups_str = os.getenv("TELEGRAM_GROUPS")
+    webhook_url = os.getenv("WEBHOOK_URL")
 
     # AI Settings
     ai_api_base = os.getenv("AI_API_BASE")
@@ -72,7 +71,7 @@ def load_config() -> Config:
     try:
         webhook_interval_minutes = int(webhook_interval_str)
         if webhook_interval_minutes <= 0:
-            raise ValueError("Webhook interval must be positive.")
+            raise ValueError("Summary interval (WEBHOOK_INTERVAL_MINUTES) must be positive.")
     except (ValueError, TypeError):
         error_message = f"Invalid WEBHOOK_INTERVAL_MINUTES: '{webhook_interval_str}'. Must be a positive integer."
         logger.error(error_message)
@@ -83,12 +82,12 @@ def load_config() -> Config:
         api_id=api_id,
         api_hash=api_hash,
         bot_name=bot_name,
-        webhook_url=webhook_url,
         webhook_interval_minutes=webhook_interval_minutes,
         telegram_groups=telegram_groups,
         ai_api_base=ai_api_base,
         ai_api_key=ai_api_key,
         ai_model_name=ai_model_name,
+        webhook_url=webhook_url,
     )
 
     logger.info(f"Configuration loaded successfully for bot: {config.bot_name}")
