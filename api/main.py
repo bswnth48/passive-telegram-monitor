@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 import logging
-from typing import Dict # Added for type hints
+from typing import Dict, Any # Import Any from typing
 
 # Need access to config and DB stats function
 from bot.config import Config, load_config # Assuming we load config here too
@@ -38,7 +38,7 @@ async def health_check():
     return {"status": "ok"}
 
 @app.get("/status", tags=["General"])
-async def get_status() -> Dict[str, any]:
+async def get_status() -> Dict[str, Any]:
     """Provides current status information about the bot."""
     logger.info("Status endpoint called.")
     db_stats = await get_db_stats()
