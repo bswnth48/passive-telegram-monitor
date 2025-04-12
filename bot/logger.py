@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 DB_DIR = "data"
 DB_PATH = os.path.join(DB_DIR, "observations.db")
+OWNER_USER_ID = 1137119534 # Define owner ID globally here
 
 async def initialize_db():
     """Initializes the SQLite database and creates/updates tables."""
@@ -71,6 +72,24 @@ async def initialize_db():
             )
             """)
             # --------------------------------
+
+            # --- New Table: Notification Targets ---
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS notification_targets (
+                target_user_id INTEGER PRIMARY KEY,
+                username TEXT,       -- Store for easier listing
+                first_name TEXT,     -- Store for easier listing
+                is_owner INTEGER DEFAULT 0 NOT NULL, -- 1 for the owner
+                added_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+            # Ensure the owner is always present
+            await db.execute("""
+            INSERT INTO notification_targets (target_user_id, is_owner, first_name)
+            VALUES (?, 1, 'Owner')
+            ON CONFLICT(target_user_id) DO UPDATE SET is_owner=excluded.is_owner;
+            """, (OWNER_USER_ID,))
+            # ---------------------------------------
 
             await db.commit()
             logger.info(f"Database initialized successfully at {DB_PATH}")
@@ -315,6 +334,82 @@ async def clear_monitored_chats():
     except Exception as e:
         logger.error(f"Error clearing monitored chats: {e}", exc_info=True)
         return -1 # Indicate error
+
+# --- Notification Target Functions ---
+
+async def add_notification_target(user_id: int, username: str | None, first_name: str | None) -> bool:
+    """Adds a user to the notification target list. Returns False if trying to add owner again."""
+    if user_id == OWNER_USER_ID:
+        logger.warning("Attempted to re-add owner ID as notification target. Ignoring.")
+        return False # Owner is always implicitly a target
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+            INSERT INTO notification_targets (target_user_id, username, first_name, is_owner)
+            VALUES (?, ?, ?, 0)
+            ON CONFLICT(target_user_id) DO UPDATE SET username=excluded.username, first_name=excluded.first_name;
+            """, (user_id, username, first_name))
+            await db.commit()
+            logger.info(f"Added/Updated notification target: ID={user_id}, Name={first_name}, Username={username}")
+            return True
+    except Exception as e:
+        logger.error(f"Error adding notification target {user_id}: {e}", exc_info=True)
+        return False
+
+async def remove_notification_target(user_id: int) -> bool:
+    """Removes a user from the notification target list. Protects the owner."""
+    if user_id == OWNER_USER_ID:
+        logger.warning("Attempted to remove owner ID from notification targets. Operation denied.")
+        return False # Cannot remove owner
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("DELETE FROM notification_targets WHERE target_user_id = ? AND is_owner = 0", (user_id,))
+            await db.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Removed notification target: ID={user_id}")
+                return True
+            else:
+                logger.warning(f"Attempted to remove non-existent or owner target: ID={user_id}")
+                return False
+    except Exception as e:
+        logger.error(f"Error removing notification target {user_id}: {e}", exc_info=True)
+        return False
+
+async def list_notification_targets() -> List[Dict[str, Any]]:
+    """Lists all currently configured notification targets."""
+    targets = []
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            query = "SELECT target_user_id, username, first_name, is_owner, added_timestamp FROM notification_targets ORDER BY added_timestamp DESC"
+            async with db.execute(query) as cursor:
+                async for row in cursor:
+                    targets.append({
+                        "user_id": row[0],
+                        "username": row[1],
+                        "first_name": row[2],
+                        "is_owner": bool(row[3]),
+                        "added_timestamp": row[4]
+                    })
+    except Exception as e:
+        logger.error(f"Error listing notification targets: {e}", exc_info=True)
+    return targets
+
+async def get_all_notification_target_ids() -> List[int]:
+    """Gets a list of all target user IDs (including the owner)."""
+    ids = []
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+             # Owner is always implicitly included via the initial insert
+            query = "SELECT target_user_id FROM notification_targets"
+            async with db.execute(query) as cursor:
+                async for row in cursor:
+                    ids.append(row[0])
+    except Exception as e:
+        logger.error(f"Error getting all notification target IDs: {e}", exc_info=True)
+    # Ensure owner is always included, even if DB read fails somehow
+    if OWNER_USER_ID not in ids:
+        ids.append(OWNER_USER_ID)
+    return list(set(ids)) # Return unique list
 
 # -------------------------------
 

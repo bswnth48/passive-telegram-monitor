@@ -81,11 +81,16 @@ python main.py
 
 ## Interacting with the Bot (Commands)
 
-Send these commands from the Telegram account used to log in (e.g., in your "Saved Messages"):
+Send these commands from the **Owner** Telegram account (whose API credentials are used):
 
 **Notification Control:**
-*   `/stop_forwarding`: Pauses sending notifications for new messages.
-*   `/start_forwarding`: Resumes notifications and shows a summary of missed messages.
+*   `/stop_forwarding`: Pauses sending notifications for new messages to all targets.
+*   `/start_forwarding`: Resumes notifications (shows summary of missed).
+
+**Notification Targets:**
+*   `/notify_add <user_id or username>`: Add another user to receive notifications/summaries.
+*   `/notify_remove <user_id or username>`: Stop sending notifications/summaries to this user (cannot remove owner).
+*   `/notify_list`: Show all users currently receiving notifications/summaries.
 
 **Monitoring Scope:**
 *   `/monitor_add <chat_id or username/link>`: Add a specific chat to the monitor list. Once the list is populated, only messages from these chats will be processed.
@@ -97,7 +102,7 @@ Send these commands from the Telegram account used to log in (e.g., in your "Sav
 *   `/summary_today`: Requests an AI-generated summary of messages logged today (requires AI env vars to be set).
 
 **Help:**
-*   `/help`: Shows a list of available commands.
+*   `/help`: Shows this help message.
 
 ## Running with Docker
 

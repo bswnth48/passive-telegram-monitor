@@ -9,8 +9,9 @@ from telethon.errors import UserIsBlockedError, FloodWaitError # Errors for send
 from bot.config import load_config, Config
 
 # Bot logic
-from bot.observer import start_observer, FORWARD_TARGET_USER_ID # Import target ID
-from bot.logger import initialize_db, get_messages_since # Use new logger func
+from bot.observer import start_observer # Only need start_observer here
+# Logger functions needed by scheduler or command handler (which runs via observer)
+from bot.logger import initialize_db, get_messages_since, get_all_notification_target_ids
 from bot.summarizer import get_ai_summary # Import AI summarizer
 from bot.webhook import send_webhook # Re-import webhook sender
 
@@ -58,35 +59,39 @@ async def periodic_task_scheduler(config: Config, client: TelegramClient):
                 logger.info(f"Found {len(messages_since_last)} new messages.")
 
                 # --- Task 1: AI Summary (if enabled) ---
+                ai_summary_result = None
                 if ai_enabled:
                     logger.info("Generating AI summary...")
-                    ai_summary = await get_ai_summary(config, messages_since_last)
-                    if ai_summary and not ai_summary.startswith("Error") and not ai_summary.startswith("AI summarization not configured") and not ai_summary.startswith("No new messages"):
-                        summary_header = f"📄 AI Summary ({last_check_time.strftime('%H:%M')} - {current_check_time.strftime('%H:%M')} UTC):\n---"
-                        full_summary_message = f"{summary_header}\n{ai_summary}"
-                        try:
-                            await client.send_message(entity=FORWARD_TARGET_USER_ID, message=full_summary_message)
-                            logger.info(f"Successfully sent AI summary to user {FORWARD_TARGET_USER_ID}")
-                        except (UserIsBlockedError, FloodWaitError) as e:
-                            logger.warning(f"Error sending AI summary to user: {e}")
-                            if isinstance(e, FloodWaitError): await asyncio.sleep(e.seconds + 1)
-                        except Exception as e:
-                            logger.error(f"Failed to send summary to user {FORWARD_TARGET_USER_ID}: {e}", exc_info=True)
+                    ai_summary_result = await get_ai_summary(config, messages_since_last)
+                    if not ai_summary_result or ai_summary_result.startswith("Error") or ai_summary_result.startswith("AI") or ai_summary_result.startswith("No new messages"):
+                        logger.warning(f"AI summary generation failed or empty: {ai_summary_result}")
+                        ai_summary_result = None # Ensure it's None if failed
                     else:
-                        logger.warning(f"AI summary generation failed or empty: {ai_summary}")
+                        logger.info("AI summary generated successfully.")
                 else:
                     logger.debug("AI summary disabled by configuration.")
+
+                # --- Send AI Summary to Targets (if generated) ---
+                if ai_summary_result:
+                    summary_header = f"📄 AI Summary ({last_check_time.strftime('%H:%M')} - {current_check_time.strftime('%H:%M')} UTC):\n---"
+                    full_summary_message = f"{summary_header}\n{ai_summary_result}"
+                    target_ids = await get_all_notification_target_ids()
+                    logger.info(f"Sending AI summary to {len(target_ids)} targets...")
+                    for target_id in target_ids:
+                        try:
+                            await client.send_message(entity=target_id, message=full_summary_message)
+                            logger.debug(f"Sent summary to target {target_id}")
+                        except (UserIsBlockedError, FloodWaitError) as e:
+                            logger.warning(f"Error sending summary to target {target_id}: {e}")
+                            if isinstance(e, FloodWaitError): await asyncio.sleep(e.seconds + 1)
+                        except Exception as e:
+                            logger.error(f"Failed to send summary to target {target_id}: {e}", exc_info=True)
 
                 # --- Task 2: External Webhook (if enabled) ---
                 if webhook_enabled:
                     logger.info(f"Sending message batch to external webhook: {config.webhook_url}")
                     # The payload for the webhook is the raw list of message dicts
-                    webhook_success = await send_webhook(config, messages_since_last)
-                    if webhook_success:
-                        logger.info("Webhook batch sent successfully.")
-                    else:
-                         logger.warning("Webhook batch send failed. Check webhook server logs.")
-                         # Note: We don't retry automatically here, messages will be included in next batch
+                    await send_webhook(config, messages_since_last)
                 else:
                     logger.debug("External webhook disabled by configuration.")
 
