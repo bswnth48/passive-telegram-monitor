@@ -105,46 +105,67 @@ async def periodic_task_scheduler(config: Config, client: TelegramClient):
             logger.error(f"Error in periodic scheduler loop: {e}", exc_info=True)
             await asyncio.sleep(60) # Wait a bit after an unexpected error
 
+# --- Combined Bot Runner ---
 async def run_observer_and_scheduler(config: Config):
-    """Runs the observer and scheduler, passing the client instance."""
+    """Connects the client and runs the observer and scheduler concurrently."""
     session_name = f"sessions/{config.bot_name.lower()}_session"
     client = TelegramClient(session_name, config.api_id, config.api_hash)
-    client.app_config = config # Attach config for handler
-    logger.info(f"Initializing TelegramClient for observer/scheduler: {session_name}")
+    client.app_config = config # Attach config for handler access
+    logger.info(f"Initializing TelegramClient: {session_name}")
 
-    async with client:
-        # Start Observer and the combined Periodic Scheduler
-        observer_task = asyncio.create_task(start_observer(client), name="TelegramObserver")
-        scheduler_task = asyncio.create_task(periodic_task_scheduler(config, client), name="PeriodicScheduler")
+    # Retry connection logic needs to be here before starting tasks
+    max_retries = 3
+    retry_delay = 5
+    connected = False
+    for attempt in range(max_retries):
+        try:
+            logger.debug(f"Connection attempt {attempt + 1}/{max_retries}...")
+            await client.connect()
+            if await client.is_user_authorized():
+                logger.info("Client connected and authorized.")
+                connected = True
+                break
+            else:
+                # This case needs user interaction (code/password)
+                # For now, log and proceed assuming manual login happens or session is valid
+                logger.warning("Client connected but not authorized. Manual login might be required.")
+                connected = True # Treat as connected for now, observer might fail later if still unauthorized
+                break
+        except ConnectionError as e:
+            logger.error(f"Connection attempt {attempt + 1} failed: {e}")
+            if attempt + 1 == max_retries: break
+            await asyncio.sleep(retry_delay)
+        except Exception as e:
+             logger.exception(f"Unexpected error during connection attempt {attempt + 1}:", exc_info=e)
+             if attempt + 1 == max_retries: break
+             await asyncio.sleep(retry_delay)
 
-        done, pending = await asyncio.wait(
-            [observer_task, scheduler_task],
-            return_when=asyncio.FIRST_COMPLETED
-        )
+    if not connected:
+        logger.critical("Failed to connect to Telegram after multiple retries. Exiting bot runner.")
+        return
 
-        # Handle completion/cancellation (simplified)
-        for task in pending:
-            task.cancel()
-            try: await task
-            except asyncio.CancelledError: pass
-            except Exception: logger.exception(f"Error during cancellation of task {task.get_name()}")
-        for task in done:
-             if task.exception(): logger.exception(f"Task {task.get_name()} failed:", exc_info=task.exception())
+    # Run tasks within the client context manager
+    try:
+        async with client:
+            observer_task = asyncio.create_task(start_observer(client), name="TelegramObserver")
+            scheduler_task = asyncio.create_task(periodic_task_scheduler(config, client), name="PeriodicScheduler")
 
-async def start_observer(client: TelegramClient): # Modified to accept client
-    """Registers handler and runs the client until disconnected."""
-    # We assume client is connected and authorized by run_observer_and_scheduler
-    client.add_event_handler(handle_new_message, events.NewMessage())
-    logger.info("Registered new message handler for all messages.")
-    me = await client.get_me()
-    global _BOT_USER_ID
-    _BOT_USER_ID = me.id
-    logger.info(f"Logged in as: {me.username} (ID: {_BOT_USER_ID})")
-    # Group joining logic now needs the client passed here if we move it out
-    # For simplicity now, assume groups were joined elsewhere or handled manually
-    logger.info("Observer running. Waiting for messages...")
-    await client.run_until_disconnected()
-    logger.info("Telegram client stopped.")
+            done, pending = await asyncio.wait(
+                [observer_task, scheduler_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            # Handle completion/cancellation
+            for task in pending: task.cancel(); await asyncio.sleep(0) # Allow cancellation
+            for task in done:
+                if task.exception(): logger.exception(f"Task {task.get_name()} failed:", exc_info=task.exception())
+
+    except Exception as e:
+        logger.exception("Error within the main client context manager:", exc_info=e)
+    finally:
+        logger.info("Bot runner task finished.")
+        if client.is_connected():
+            await client.disconnect()
+            logger.info("Telegram client disconnected.")
 
 async def launch_bot_and_api():
     """Initializes DB, loads config, runs API and the combined observer/scheduler."""
@@ -180,39 +201,20 @@ async def launch_bot_and_api():
     )
     api_server = uvicorn.Server(uvicorn_config)
 
-    # 4. Create Tasks for API and the combined Bot runner
+    # 4. Create Tasks for API and the Bot runner
     bot_runner_task = asyncio.create_task(run_observer_and_scheduler(config), name="BotRunner")
     api_task = asyncio.create_task(api_server.serve(), name="APIServer")
 
     logger.info("Starting API server and Bot Runner (Observer + Scheduler)...")
-
-    # Wait for any task to complete (or fail)
     tasks = [bot_runner_task, api_task]
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
     logger.info("One of the main tasks finished. Initiating shutdown.")
-
-    # Check for exceptions in completed tasks
+    # Cleanup
+    for task in pending: task.cancel(); await asyncio.sleep(0) # Allow cancellation
     for task in done:
-        try:
-            result = task.result()
-            logger.info(f"Task {task.get_name()} finished cleanly with result: {result}")
-        except Exception:
-            logger.exception(f"Task {task.get_name()} failed:")
-
-    # Cancel pending tasks
-    for task in pending:
-        logger.info(f"Cancelling pending task: {task.get_name()}")
-        task.cancel()
-        try:
-            await task # Allow cancellation to propagate
-        except asyncio.CancelledError:
-            logger.info(f"Task {task.get_name()} cancelled successfully.")
-        except Exception:
-            logger.exception(f"Error during cancellation of task {task.get_name()}:")
+        if task.exception(): logger.exception(f"Task {task.get_name()} failed:", exc_info=task.exception())
 
     logger.info(f"Bot instance {config.bot_name} shutdown complete.")
-
 
 if __name__ == "__main__":
     try:
