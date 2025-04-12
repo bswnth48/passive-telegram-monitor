@@ -12,6 +12,7 @@ from bot.config import load_config, Config
 from bot.observer import start_observer, FORWARD_TARGET_USER_ID # Import target ID
 from bot.logger import initialize_db, get_messages_since # Use new logger func
 from bot.summarizer import get_ai_summary # Import AI summarizer
+from bot.webhook import send_webhook # Re-import webhook sender
 
 # API logic
 from api.main import app as fastapi_app # Import the FastAPI app instance
@@ -25,71 +26,84 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# --- Summary Scheduler Task ---
-async def summary_scheduler(config: Config, client: TelegramClient):
-    """Periodically fetches messages, generates AI summary, and sends it to the target user."""
-    if not config.ai_api_base or not config.ai_api_key:
-        logger.warning("AI not configured. Summary scheduler will not run.")
+# --- Combined Scheduler Task ---
+async def periodic_task_scheduler(config: Config, client: TelegramClient):
+    """Periodically performs scheduled tasks: AI summary and optional webhook send."""
+
+    # Check if any scheduled task is possible
+    ai_enabled = config.ai_api_base and config.ai_api_key
+    webhook_enabled = bool(config.webhook_url)
+    if not ai_enabled and not webhook_enabled:
+        logger.warning("Neither AI nor Webhook is configured. Scheduler will not run.")
         return
     if config.webhook_interval_minutes <= 0:
-        logger.warning("Invalid summary interval. Scheduler will not run.")
+        logger.warning("Invalid interval. Scheduler will not run.")
         return
 
     interval_seconds = config.webhook_interval_minutes * 60
-    last_check_time = datetime.utcnow() # Start checking from now
+    last_check_time = datetime.utcnow()
 
-    logger.info(f"Summary scheduler started. Interval: {config.webhook_interval_minutes} minutes.")
+    logger.info(f"Periodic task scheduler started. Interval: {config.webhook_interval_minutes} minutes. AI: {ai_enabled}, Webhook: {webhook_enabled}")
 
     while True:
         try:
             await asyncio.sleep(interval_seconds)
             current_check_time = datetime.utcnow()
-            logger.info(f"Summary interval elapsed. Fetching messages since {last_check_time}...")
+            logger.info(f"Scheduler interval elapsed. Fetching messages since {last_check_time}...")
 
             # Fetch messages logged since the last check
-            messages_to_summarize = await get_messages_since(last_check_time)
+            messages_since_last = await get_messages_since(last_check_time)
 
-            if messages_to_summarize:
-                logger.info(f"Found {len(messages_to_summarize)} new messages. Generating AI summary...")
+            if messages_since_last:
+                logger.info(f"Found {len(messages_since_last)} new messages.")
 
-                ai_summary = await get_ai_summary(config, messages_to_summarize)
-
-                if ai_summary and not ai_summary.startswith("Error") and not ai_summary.startswith("AI summarization not configured") and not ai_summary.startswith("No new messages") :
-                    logger.info("AI summary generated. Sending to target user...")
-                    summary_header = f"📄 AI Summary ({last_check_time.strftime('%H:%M')} - {current_check_time.strftime('%H:%M')} UTC):\n---"
-                    full_summary_message = f"{summary_header}\n{ai_summary}"
-
-                    # Send summary to the target user via Telegram
-                    try:
-                        await client.send_message(
-                            entity=FORWARD_TARGET_USER_ID,
-                            message=full_summary_message
-                        )
-                        logger.info(f"Successfully sent AI summary to user {FORWARD_TARGET_USER_ID}")
-                        # Update last_check_time only if summary sent successfully
-                        last_check_time = current_check_time
-                    except UserIsBlockedError:
-                        logger.warning(f"Cannot send summary: User {FORWARD_TARGET_USER_ID} has blocked this bot/user.")
-                    except FloodWaitError as e:
-                        logger.warning(f"Flood wait error sending summary. Waiting {e.seconds}s.")
-                        await asyncio.sleep(e.seconds + 1)
-                    except Exception as e:
-                        logger.error(f"Failed to send summary to user {FORWARD_TARGET_USER_ID}: {e}", exc_info=True)
+                # --- Task 1: AI Summary (if enabled) ---
+                if ai_enabled:
+                    logger.info("Generating AI summary...")
+                    ai_summary = await get_ai_summary(config, messages_since_last)
+                    if ai_summary and not ai_summary.startswith("Error") and not ai_summary.startswith("AI summarization not configured") and not ai_summary.startswith("No new messages"):
+                        summary_header = f"📄 AI Summary ({last_check_time.strftime('%H:%M')} - {current_check_time.strftime('%H:%M')} UTC):\n---"
+                        full_summary_message = f"{summary_header}\n{ai_summary}"
+                        try:
+                            await client.send_message(entity=FORWARD_TARGET_USER_ID, message=full_summary_message)
+                            logger.info(f"Successfully sent AI summary to user {FORWARD_TARGET_USER_ID}")
+                        except (UserIsBlockedError, FloodWaitError) as e:
+                            logger.warning(f"Error sending AI summary to user: {e}")
+                            if isinstance(e, FloodWaitError): await asyncio.sleep(e.seconds + 1)
+                        except Exception as e:
+                            logger.error(f"Failed to send summary to user {FORWARD_TARGET_USER_ID}: {e}", exc_info=True)
+                    else:
+                        logger.warning(f"AI summary generation failed or empty: {ai_summary}")
                 else:
-                    logger.warning(f"AI summary generation failed or empty: {ai_summary}")
-                    # Decide if last_check_time should be updated even on AI failure
-                    # Maybe update to avoid huge backlog? For now, we don't update on failure.
-            else:
-                logger.info("No new messages found since last check. Skipping summary.")
-                # Update time even if no messages, so we don't query increasingly large ranges
+                    logger.debug("AI summary disabled by configuration.")
+
+                # --- Task 2: External Webhook (if enabled) ---
+                if webhook_enabled:
+                    logger.info(f"Sending message batch to external webhook: {config.webhook_url}")
+                    # The payload for the webhook is the raw list of message dicts
+                    webhook_success = await send_webhook(config, messages_since_last)
+                    if webhook_success:
+                        logger.info("Webhook batch sent successfully.")
+                    else:
+                         logger.warning("Webhook batch send failed. Check webhook server logs.")
+                         # Note: We don't retry automatically here, messages will be included in next batch
+                else:
+                    logger.debug("External webhook disabled by configuration.")
+
+                # Update last_check_time regardless of individual task success/failure
+                # This prevents the time window from growing indefinitely if one task fails
                 last_check_time = current_check_time
 
+            else:
+                logger.info("No new messages found since last check.")
+                last_check_time = current_check_time # Still update time
+
         except asyncio.CancelledError:
-            logger.info("Summary scheduler task cancelled.")
+            logger.info("Periodic task scheduler cancelled.")
             break
         except Exception as e:
-            logger.error(f"Error in summary scheduler loop: {e}", exc_info=True)
-            await asyncio.sleep(60)
+            logger.error(f"Error in periodic scheduler loop: {e}", exc_info=True)
+            await asyncio.sleep(60) # Wait a bit after an unexpected error
 
 async def run_observer_and_scheduler(config: Config):
     """Runs the observer and scheduler, passing the client instance."""
@@ -99,9 +113,9 @@ async def run_observer_and_scheduler(config: Config):
     logger.info(f"Initializing TelegramClient for observer/scheduler: {session_name}")
 
     async with client:
-        # Run observer and scheduler concurrently, passing the client to scheduler
-        observer_task = asyncio.create_task(start_observer(client), name="TelegramObserver") # Pass client directly
-        scheduler_task = asyncio.create_task(summary_scheduler(config, client), name="SummaryScheduler")
+        # Start Observer and the combined Periodic Scheduler
+        observer_task = asyncio.create_task(start_observer(client), name="TelegramObserver")
+        scheduler_task = asyncio.create_task(periodic_task_scheduler(config, client), name="PeriodicScheduler")
 
         done, pending = await asyncio.wait(
             [observer_task, scheduler_task],
