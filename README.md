@@ -126,28 +126,22 @@ When running, the FastAPI server is available (default: `http://localhost:8000`)
 graph TD
     A[main.py] --> B{Bot Runner Task}
     A --> C{API Server Task (FastAPI)}
-
     B --> D[Telethon Client]
     B --> E{Periodic Scheduler}
-
     D --> F[bot/observer.py]
     F --> G[bot/logger.py]
     F --> H[Notification Targets]
     F --> I[Monitored Chats]
     F -- processes --> J((Messages))
-
     E --> G
     E --> K[bot/summarizer.py]
     E --> L[bot/webhook.py]
     E --> H
-
     G --> M[(SQLite DB)]
     I --> M
     H --> M
-
     K --> N{AI API}
     L --> O{External Webhook URL}
-
     C --> P[api/main.py]
     P --> G
     P --> Q[Config]
