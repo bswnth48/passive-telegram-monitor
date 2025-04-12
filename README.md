@@ -1,18 +1,21 @@
 # Assetmatic Micro 1: Passive Telegram Observation Bot
 
-A modular Python project that creates a passive Telegram bot capable of observing message flow, logging details (including links/media info), and interacting via commands. It includes a basic API for health checks.
+A modular Python project that creates a passive Telegram bot using a user account. It observes message flow, logs details (including links/media info) to SQLite, and allows for dynamic control via Telegram commands.
 
 ## Features
 
-- Passive observation of Telegram groups/chats.
-- Logs message details (text, sender, chat, timestamp, entities, media info) to SQLite.
-- Forwards customizable notifications for observed messages to a target user.
-- Control notification forwarding via Telegram commands (`/start_forwarding`, `/stop_forwarding`).
-- Provides AI-powered summaries of today's messages via `/summary_today` command (requires AI API configuration).
-- Basic FastAPI API server with a `/health` endpoint.
-- Supports joining configured public Telegram groups.
-- Modular design.
-- Docker and GitHub Codespaces compatible.
+- **Passive Observation:** Monitors messages in specified Telegram groups/chats or all chats the user account is in.
+- **Detailed Logging:** Saves message details (text, sender, chat, timestamp, entities, media info) to a local SQLite database.
+- **Dynamic Chat Monitoring:** Control which specific chats are monitored using commands (`/monitor_add`, `/monitor_remove`, `/monitor_list`, `/monitor_clear`). Monitors all chats by default.
+- **Multi-Target Notifications:** Forwards customizable notifications for observed messages to one or more configured Telegram users.
+- **Notification Control:** Pause/resume notifications (`/stop_forwarding`, `/start_forwarding`) and manage recipients (`/notify_add`, `/notify_remove`, `/notify_list`) via commands.
+- **Scheduled AI Summaries:** Periodically generates an AI summary of recent messages and sends it to all notification targets (requires AI API configuration).
+- **On-Demand AI Summaries:** Request an AI summary for the current day via `/summary_today` command.
+- **Optional Scheduled Webhook:** Can optionally send batches of raw message data to an external webhook URL at a configured interval.
+- **API Monitoring:** Includes a basic FastAPI server with `/health` and `/status` endpoints.
+- **Automatic Group Joining:** Attempts to join public groups listed in configuration.
+- **Modular Design:** Separated components for bot logic, API, database, AI, etc.
+- **Deployment Ready:** Supports Docker and includes GitHub Codespaces configuration.
 
 ## Setup and Installation
 
@@ -44,26 +47,32 @@ A modular Python project that creates a passive Telegram bot capable of observin
 
 4.  **Create and Configure `.env` file:**
 
-    Create a `.env` file in the project root (you can copy `.env.example` if it exists). Fill it with:
+    Create a `.env` file in the project root. **Minimum required:** `API_ID`, `API_HASH`.
 
     ```dotenv
-    # Telegram API Credentials (REQUIRED - Obtain from https://my.telegram.org/apps)
+    # --- Telegram API Credentials (REQUIRED) ---
     API_ID=12345678
     API_HASH=your_api_hash_string_here
 
-    # Bot Configuration
-    BOT_NAME=MyTelegramBot # Name for the bot instance and session file
-    WEBHOOK_URL=http://example.com/webhook # REQUIRED (placeholder OK for now)
-    WEBHOOK_INTERVAL_MINUTES=60 # Optional: Planned for webhook feature
-    TELEGRAM_GROUPS=https://t.me/some_public_group # Optional: Comma-separated public group links to join
+    # --- Bot Configuration ---
+    BOT_NAME=MyObserverBot # Name for instance & session file
+    # Comma-separated public group links/usernames bot should attempt to join
+    TELEGRAM_GROUPS=https://t.me/some_public_group,@another_group
 
-    # --- AI Configuration (OPTIONAL - Needed for /summary_today) ---
-    # Use an OpenAI-compatible endpoint (e.g., for Gemini)
-    AI_API_BASE=https://your-ai-endpoint.com/v1 # Base URL of the AI service
-    AI_API_KEY=YOUR_AI_API_KEY_HERE          # Your API Key for the AI service
-    AI_MODEL_NAME=gemini-pro              # Model name to use for summarization
+    # --- Scheduled Tasks Interval (Minutes) ---
+    # Controls how often AI summary is sent AND optional webhook is triggered
+    WEBHOOK_INTERVAL_MINUTES=30 # Default: 30
+
+    # --- Optional External Webhook ---
+    # If set, sends raw message batches to this URL periodically
+    # WEBHOOK_URL=https://your-webhook-endpoint.com/data
+
+    # --- Optional AI Configuration (for Summaries) ---
+    # OpenAI-compatible endpoint (e.g., for Gemini)
+    AI_API_BASE=https://your-ai-endpoint.com/v1
+    AI_API_KEY=YOUR_AI_API_KEY_HERE
+    AI_MODEL_NAME=gemini-pro # Or specific model like gemini-2.5-pro-exp-03-25
     ```
-    *(See Configuration Options section below for details)*
 
 5.  **Initial Database Setup:**
     The first time you run the bot, it will create the SQLite database file in the `data/` directory. If you encounter schema errors after code updates, delete `data/observations.db` and let the bot recreate it on the next run.
@@ -81,7 +90,7 @@ python main.py
 
 ## Interacting with the Bot (Commands)
 
-Send these commands from the **Owner** Telegram account (whose API credentials are used):
+Send from the **Owner** account (whose API creds are used) to the bot (e.g., Saved Messages):
 
 **Notification Control:**
 *   `/stop_forwarding`: Pauses sending notifications for new messages to all targets.
@@ -104,8 +113,67 @@ Send these commands from the **Owner** Telegram account (whose API credentials a
 **Help:**
 *   `/help`: Shows this help message.
 
-## Running with Docker
+## API Endpoints
 
-Or with Docker:
+When running, the FastAPI server is available (default: `http://localhost:8000`):
 
+*   `GET /health`: Returns `{"status": "ok"}` if the API server is running.
+*   `GET /status`: Returns a JSON object with current bot status, DB stats, configuration info.
+
+## Project Structure
+
+```mermaid
+graph TD
+    A[main.py] --> B{Bot Runner Task};
+    A --> C{API Server Task (FastAPI)};
+
+    B --> D[Telethon Client];
+    B --> E{Periodic Scheduler};
+
+    D --> F[bot/observer.py];
+    F --> G[bot/logger.py];
+    F --> H[Notification Targets];
+    F --> I[Monitored Chats];
+    F -- processes --> J((Messages));
+
+    E --> G;
+    E --> K[bot/summarizer.py];
+    E --> L[bot/webhook.py];
+    E --> H;
+
+    G --> M[(SQLite DB)];
+    I --> M;
+    H --> M;
+
+    K --> N{AI API};
+    L --> O{External Webhook URL};
+
+    C --> P[api/main.py];
+    P --> G;
+    P --> Q[Config];
+
+    style M fill:#lightgrey,stroke:#333,stroke-width:2px
+    style N fill:#lightblue,stroke:#333,stroke-width:2px
+    style O fill:#lightblue,stroke:#333,stroke-width:2px
 ```
+*(Simplified view)*
+
+## Configuration Options
+
+Loaded from the `.env` file:
+
+*   `API_ID`, `API_HASH`: Your Telegram credentials (**Required**).
+*   `BOT_NAME`: Name for session file (Default: `DefaultBotName`).
+*   `TELEGRAM_GROUPS`: Comma-separated public groups/usernames to join (Optional).
+*   `WEBHOOK_INTERVAL_MINUTES`: Interval in minutes for scheduled summary & optional webhook (Default: `30`).
+*   `WEBHOOK_URL`: URL for optional external webhook sending raw message batches (Optional).
+*   `AI_API_BASE`, `AI_API_KEY`: AI service endpoint/key (**Required for Summaries**).
+*   `AI_MODEL_NAME`: AI model for summarization (Default: `gemini-pro`).
+
+## Development
+
+# ... (same) ...
+
+## License
+
+# ... (same) ...
