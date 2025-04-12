@@ -5,6 +5,8 @@ from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.errors import FloodWaitError, UserAlreadyParticipantError, ChannelsTooMuchError, ChannelInvalidError, ChannelPrivateError, InviteHashExpiredError, UserIsBlockedError
 # Peer types for type checking
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
+# Import specific media types for checking
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
 
 from .config import Config
 from .logger import log_message # Import the logging function
@@ -16,7 +18,7 @@ logger = logging.getLogger(__name__)
 FORWARD_TARGET_USER_ID = 1137119534 # Your User ID
 
 async def handle_new_message(event):
-    """Handles incoming messages, logs them, and forwards the original message to a target user."""
+    """Handles incoming messages, logs rich data, and forwards the original message."""
     sender = None # Initialize sender
     message = event.message # Get the message object
     try:
@@ -48,10 +50,67 @@ async def handle_new_message(event):
         else:
             chat_type = 'unknown'
 
-        # 3. Get Message Info (for logging)
+        # 3. Get Message Info (including entities and media)
         message_id = message.id
         timestamp = message.date # Already a datetime object
         text = message.text # Or message.message
+        entities = message.entities # Can be None
+        media = message.media
+
+        # Process media information
+        media_type = None
+        media_info = None
+        if isinstance(media, MessageMediaPhoto):
+            media_type = 'photo'
+            # Extract basic info, avoiding full object serialization
+            media_info = {
+                'id': media.photo.id,
+                'access_hash': media.photo.access_hash,
+                'has_stickers': bool(media.photo.has_stickers),
+                # 'sizes': [s.type for s in media.photo.sizes] # Example: can add more if needed
+            }
+        elif isinstance(media, MessageMediaDocument):
+            media_type = 'document'
+            doc_attrs = {attr.CONSTRUCTOR_ID: attr for attr in media.document.attributes}
+            filename_attr = doc_attrs.get(b'\x15\xb2\x9d\x28') # DocumentAttributeFilename
+            media_info = {
+                'id': media.document.id,
+                'access_hash': media.document.access_hash,
+                'mime_type': media.document.mime_type,
+                'size': media.document.size,
+                'filename': getattr(filename_attr, 'file_name', None),
+                # Add other attributes like video/audio duration if needed
+            }
+            # Refine media type based on mime type
+            if media.document.mime_type:
+                if media.document.mime_type.startswith('video/'):
+                    media_type = 'video'
+                elif media.document.mime_type.startswith('audio/'):
+                    media_type = 'audio'
+                elif media.document.mime_type == 'image/webp': # Stickers are often webp documents
+                     # Check for DocumentAttributeSticker
+                     if b'\xaf\`\xf5\x06' in doc_attrs:
+                         media_type = 'sticker'
+        elif isinstance(media, MessageMediaWebPage):
+            media_type = 'webpage'
+            media_info = {
+                'url': getattr(media.webpage, 'url', None),
+                'display_url': getattr(media.webpage, 'display_url', None),
+                'site_name': getattr(media.webpage, 'site_name', None),
+                'title': getattr(media.webpage, 'title', None),
+                # 'description': getattr(media.webpage, 'description', None)
+            }
+        # Add elif blocks for other media types (MessageMediaContact, Geo, etc.) if needed
+
+        # Convert Telethon entities to simpler list of dicts for JSON serialization
+        serializable_entities = None
+        if entities:
+            serializable_entities = []
+            for entity in entities:
+                entity_dict = entity.to_dict()
+                # Remove any non-standard keys if necessary, e.g., '_'
+                entity_dict.pop('_', None)
+                serializable_entities.append(entity_dict)
 
         # Basic console logging (optional, can be removed later)
         logger.info(
@@ -73,7 +132,10 @@ async def handle_new_message(event):
             sender_is_bot=sender_is_bot,
             message_id=message_id,
             timestamp=timestamp,
-            text=text
+            text=text,
+            entities=serializable_entities, # Pass the serializable list
+            media_type=media_type,
+            media_info=media_info
         )
 
         # 5. Forward the *original* message
