@@ -1,14 +1,18 @@
 # Assetmatic Micro 1: Passive Telegram Observation Bot
 
-A modular Python project that creates a passive Telegram bot capable of observing message flow in public groups, logging metadata, and triggering webhooks based on configurable events.
+A modular Python project that creates a passive Telegram bot capable of observing message flow, logging details (including links/media info), and interacting via commands. It includes a basic API for health checks.
 
 ## Features
 
-- Passive observation of Telegram groups
-- Message and metadata logging to SQLite
-- Webhook triggers based on configurable rules
-- Modular design with FastAPI backend
-- Docker and GitHub Codespaces compatible
+- Passive observation of Telegram groups/chats.
+- Logs message details (text, sender, chat, timestamp, entities, media info) to SQLite.
+- Forwards customizable notifications for observed messages to a target user.
+- Control notification forwarding via Telegram commands (`/start_forwarding`, `/stop_forwarding`).
+- Provides AI-powered summaries of today's messages via `/summary_today` command (requires AI API configuration).
+- Basic FastAPI API server with a `/health` endpoint.
+- Supports joining configured public Telegram groups.
+- Modular design.
+- Docker and GitHub Codespaces compatible.
 
 ## Setup and Installation
 
@@ -40,8 +44,7 @@ A modular Python project that creates a passive Telegram bot capable of observin
 
 4.  **Create and Configure `.env` file:**
 
-    Copy the `.env.example` file (if provided) or create a new file named `.env` in the project root.
-    Fill it with your Telegram API credentials and desired configuration:
+    Create a `.env` file in the project root (you can copy `.env.example` if it exists). Fill it with:
 
     ```dotenv
     # Telegram API Credentials (REQUIRED - Obtain from https://my.telegram.org/apps)
@@ -50,11 +53,20 @@ A modular Python project that creates a passive Telegram bot capable of observin
 
     # Bot Configuration
     BOT_NAME=MyTelegramBot # Name for the bot instance and session file
-    WEBHOOK_URL=http://example.com/webhook # REQUIRED (even if webhook logic is not fully used yet)
-    WEBHOOK_INTERVAL_MINUTES=60 # Optional: How often to ping (default 60)
-    TELEGRAM_GROUPS=https://t.me/some_public_group,https://t.me/another_public_group # Optional: Comma-separated public group links
+    WEBHOOK_URL=http://example.com/webhook # REQUIRED (placeholder OK for now)
+    WEBHOOK_INTERVAL_MINUTES=60 # Optional: Planned for webhook feature
+    TELEGRAM_GROUPS=https://t.me/some_public_group # Optional: Comma-separated public group links to join
+
+    # --- AI Configuration (OPTIONAL - Needed for /summary_today) ---
+    # Use an OpenAI-compatible endpoint (e.g., for Gemini)
+    AI_API_BASE=https://your-ai-endpoint.com/v1 # Base URL of the AI service
+    AI_API_KEY=YOUR_AI_API_KEY_HERE          # Your API Key for the AI service
+    AI_MODEL_NAME=gemini-pro              # Model name to use for summarization
     ```
     *(See Configuration Options section below for details)*
+
+5.  **Initial Database Setup:**
+    The first time you run the bot, it will create the SQLite database file in the `data/` directory. If you encounter schema errors after code updates, delete `data/observations.db` and let the bot recreate it on the next run.
 
 ## Running the Bot
 
@@ -63,11 +75,17 @@ Ensure your Conda environment is active (`conda activate assetmatic_env`).
 ```bash
 python main.py
 ```
+*   **First Run:** Authorize the session by entering your phone number, login code, and potentially 2FA password when prompted.
+*   **API:** The FastAPI server will also start (usually on `http://localhost:8000`). Check `/health` for status.
+*   **Stopping:** Press `Ctrl+C`.
 
-*   **First Run:** You will likely be prompted in the terminal to enter your phone number, the code sent to your Telegram app, and potentially your 2FA password to authorize the session.
-*   **Subsequent Runs:** The bot should log in automatically using the saved session file (e.g., `sessions/mytelegrambot_session`).
+## Interacting with the Bot (Commands)
 
-To stop the bot, press `Ctrl+C` in the terminal.
+Send these commands from the Telegram account used to log in (e.g., in your "Saved Messages"):
+
+*   `/stop_forwarding`: Pauses sending notifications for new messages.
+*   `/start_forwarding`: Resumes notifications and shows a summary of missed messages.
+*   `/summary_today`: Requests an AI-generated summary of messages logged today (requires AI env vars to be set).
 
 ## Running with Docker
 
@@ -82,29 +100,38 @@ docker run -d --name assetmatic-bot --env-file .env assetmatic-micro-1
 
 ```
 assetmatic-micro-1/
+├── api/             # FastAPI endpoints
+│   └── main.py      # FastAPI app instance and routes
 ├── bot/             # Telegram bot logic
 │   ├── config.py    # Configuration loading
-│   ├── observer.py  # Telegram message observer
-│   └── logger.py    # Data logging
-├── api/             # FastAPI endpoints
-│   └── routes.py    # API routes
-├── scribe/          # Codegen integration
-│   └── plugin.py
-├── main.py          # Entry point
+│   ├── logger.py    # Data logging (SQLite)
+│   ├── observer.py  # Telegram message observer & command handler
+│   └── summarizer.py # AI summarization logic
+├── data/            # Database files (ignored by git)
+├── sessions/        # Telegram session files (ignored by git)
+├── tests/           # Unit/integration tests (TODO)
+├── .env.example     # Example environment file (TODO)
+├── .gitignore       # Git ignore configuration
+├── .cursorignore    # Cursor AI ignore config
+├── .cursorrules     # Cursor AI rules
+├── .devcontainer/   # Codespaces config
+├── main.py          # Main entry point
 ├── Dockerfile       # Docker configuration
-└── requirements.txt # Dependencies
+├── requirements.txt # Python dependencies
+└── README.md        # This file
 ```
 
 ## Configuration Options
 
-Configuration is loaded from the `.env` file:
+Loaded from the `.env` file:
 
-*   `API_ID`: Your numeric Telegram API ID (**Required**).
-*   `API_HASH`: Your alphanumeric Telegram API Hash (**Required**).
-*   `BOT_NAME`: Name for this bot instance and its session file (Default: `DefaultBotName`).
-*   `WEBHOOK_URL`: The URL the bot should eventually ping (**Required** by the current config loader).
-*   `WEBHOOK_INTERVAL_MINUTES`: How often, in minutes, the webhook should be triggered (Default: `60`). Must be a positive integer.
-*   `TELEGRAM_GROUPS`: A comma-separated list of public Telegram group URLs the bot should monitor (Optional. If empty, the bot only monitors existing chats/DMs).
+*   `API_ID`, `API_HASH`: Telegram API credentials (**Required**).
+*   `BOT_NAME`: Name for the bot instance/session (Default: `DefaultBotName`).
+*   `WEBHOOK_URL`: Target for future webhook feature (**Required Placeholder**).
+*   `WEBHOOK_INTERVAL_MINUTES`: Interval for future webhook (Default: `60`).
+*   `TELEGRAM_GROUPS`: Comma-separated public group URLs to join (Optional).
+*   `AI_API_BASE`, `AI_API_KEY`: AI service endpoint and key (**Required for `/summary_today`**).
+*   `AI_MODEL_NAME`: AI model for summarization (Default: `gemini-pro`).
 
 ## Development
 

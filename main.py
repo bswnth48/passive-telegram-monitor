@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uvicorn # Need uvicorn to run FastAPI
 
 # Configuration loading
 from bot.config import load_config, Config
@@ -8,15 +9,19 @@ from bot.config import load_config, Config
 from bot.observer import start_observer
 from bot.logger import initialize_db # Import the initializer
 
-# Placeholder for API logic
-# from api import main as api_main # Assuming FastAPI app is in api/main.py
+# API logic
+from api.main import app as fastapi_app # Import the FastAPI app instance
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Silence noisy uvicorn logs unless needed
+logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
-async def launch_bot():
+async def launch_bot_and_api():
     """
-    Main entry point to launch the bot instance based on environment configuration.
+    Initializes DB, loads config, and runs the Bot Observer and FastAPI server concurrently.
     """
     # 1. Initialize Database
     try:
@@ -39,28 +44,60 @@ async def launch_bot():
 
     logger.info(f"Launching bot instance: {config.bot_name}")
 
-    # 3. Start Observer
-    try:
-        # Start the Telegram observer
-        await start_observer(config)
-        logger.info(f"Observer for {config.bot_name} finished.")
-    except Exception as e:
-        logger.exception(f"An error occurred while running the observer for {config.bot_name}:", exc_info=e)
+    # 3. Configure Uvicorn Server
+    # Note: Consider making host/port configurable via .env later
+    uvicorn_config = uvicorn.Config(
+        app=fastapi_app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info", # Control uvicorn's internal logging level
+        # loop="asyncio" # Usually inferred
+    )
+    api_server = uvicorn.Server(uvicorn_config)
 
-    # TODO: Optionally, start the FastAPI server if needed as part of the launch
-    # uvicorn.run(api_main.app, host="0.0.0.0", port=8000) # Example
+    # 4. Run Observer and API concurrently
+    observer_task = asyncio.create_task(start_observer(config), name="TelegramObserver")
+    api_task = asyncio.create_task(api_server.serve(), name="APIServer")
 
-    logger.info(f"Bot instance {config.bot_name} launch sequence complete.")
-    # The start_observer function now handles the main running loop
-    # No longer need asyncio.Future() here
+    logger.info("Starting Telegram Observer and API server...")
+
+    # Wait for either task to complete (or fail)
+    # Using asyncio.wait to handle completion/cancellation gracefully
+    done, pending = await asyncio.wait(
+        [observer_task, api_task],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    logger.info("One of the main tasks finished. Initiating shutdown.")
+
+    # Check for exceptions in completed tasks
+    for task in done:
+        try:
+            result = task.result()
+            logger.info(f"Task {task.get_name()} finished cleanly with result: {result}")
+        except Exception:
+            logger.exception(f"Task {task.get_name()} failed:")
+
+    # Cancel pending tasks
+    for task in pending:
+        logger.info(f"Cancelling pending task: {task.get_name()}")
+        task.cancel()
+        try:
+            await task # Allow cancellation to propagate
+        except asyncio.CancelledError:
+            logger.info(f"Task {task.get_name()} cancelled successfully.")
+        except Exception:
+            logger.exception(f"Error during cancellation of task {task.get_name()}:")
+
+    logger.info(f"Bot instance {config.bot_name} shutdown complete.")
 
 
 if __name__ == "__main__":
-    # The bot name is now determined by the environment config loaded in launch_bot
     try:
-        asyncio.run(launch_bot())
+        asyncio.run(launch_bot_and_api())
     except KeyboardInterrupt:
-        logger.info("Bot stopped manually.")
+        logger.info("Shutdown requested via KeyboardInterrupt.")
     except Exception as e:
-        # This top-level exception might catch issues during asyncio.run itself
         logger.exception("An error occurred during bot execution:", exc_info=e)
+    finally:
+        logger.info("Application finished.")

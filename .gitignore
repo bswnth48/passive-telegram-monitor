@@ -15,6 +15,9 @@ __pycache__/
 # Telegram session files
 sessions/
 
+# Application Data
+data/
+
 # IDE files (example for VSCode)
 .vscode/
 
