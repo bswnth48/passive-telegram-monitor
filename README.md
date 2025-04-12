@@ -123,12 +123,12 @@ When running, the FastAPI server is available (default: `http://localhost:8000`)
 ## Project Structure
 
 ```mermaid
-graph TD
+flowchart TD
     A[main.py]
-    B{Bot Runner Task}
-    C{API Server Task (FastAPI)}
+    B{"Bot Runner Task"}
+    C{"API Server Task (FastAPI)"}
     D[Telethon Client]
-    E{Periodic Scheduler}
+    E{"Periodic Scheduler"}
     F[bot/observer.py]
     G[bot/logger.py]
     H[Notification Targets]
@@ -137,8 +137,8 @@ graph TD
     K[bot/summarizer.py]
     L[bot/webhook.py]
     M[(SQLite DB)]
-    N{AI API}
-    O{External Webhook URL}
+    N{"AI API"}
+    O{"External Webhook URL"}
     P[api/main.py]
     Q[Config]
 
