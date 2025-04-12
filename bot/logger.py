@@ -194,6 +194,33 @@ async def get_messages_since(timestamp: datetime) -> List[Dict[str, Any]]:
         logger.error(f"Unexpected error getting messages since {timestamp}: {e}", exc_info=True)
     return messages
 
+async def get_db_stats() -> Dict[str, int]:
+    """Retrieves basic statistics from the database."""
+    stats = {
+        "total_messages": 0,
+        "total_chats": 0,
+        "total_users": 0
+    }
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT COUNT(*) FROM messages") as cursor:
+                result = await cursor.fetchone()
+                if result: stats["total_messages"] = result[0]
+            async with db.execute("SELECT COUNT(*) FROM chats") as cursor:
+                result = await cursor.fetchone()
+                if result: stats["total_chats"] = result[0]
+            async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+                result = await cursor.fetchone()
+                if result: stats["total_users"] = result[0]
+            logger.debug(f"Retrieved DB stats: {stats}")
+    except sqlite3.Error as e:
+        logger.error(f"DB error getting stats: {e}", exc_info=True)
+        # Return default stats on error
+    except Exception as e:
+        logger.error(f"Unexpected error getting stats: {e}", exc_info=True)
+        # Return default stats on error
+    return stats
+
 # Example test remains largely the same but needs updates if testing new fields
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
