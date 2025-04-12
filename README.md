@@ -124,27 +124,45 @@ When running, the FastAPI server is available (default: `http://localhost:8000`)
 
 ```mermaid
 graph TD
-    A[main.py] --> B{Bot Runner Task}
-    A --> C{API Server Task (FastAPI)}
-    B --> D[Telethon Client]
-    B --> E{Periodic Scheduler}
-    D --> F[bot/observer.py]
-    F --> G[bot/logger.py]
-    F --> H[Notification Targets]
-    F --> I[Monitored Chats]
-    F -- processes --> J((Messages))
+    A[main.py]
+    B{Bot Runner Task}
+    C{API Server Task (FastAPI)}
+    D[Telethon Client]
+    E{Periodic Scheduler}
+    F[bot/observer.py]
+    G[bot/logger.py]
+    H[Notification Targets]
+    I[Monitored Chats]
+    J((Messages))
+    K[bot/summarizer.py]
+    L[bot/webhook.py]
+    M[(SQLite DB)]
+    N{AI API}
+    O{External Webhook URL}
+    P[api/main.py]
+    Q[Config]
+
+    A --> B
+    A --> C
+    B --> D
+    B --> E
+    C --> P
+    D --> F
     E --> G
-    E --> K[bot/summarizer.py]
-    E --> L[bot/webhook.py]
+    E --> K
+    E --> L
     E --> H
-    G --> M[(SQLite DB)]
-    I --> M
+    F --> G
+    F --> H
+    F --> I
+    F -- processes --> J
+    G --> M
     H --> M
-    K --> N{AI API}
-    L --> O{External Webhook URL}
-    C --> P[api/main.py]
+    I --> M
+    K --> N
+    L --> O
     P --> G
-    P --> Q[Config]
+    P --> Q
 
     style M fill:#lightgrey,stroke:#333,stroke-width:2px
     style N fill:#lightblue,stroke:#333,stroke-width:2px
