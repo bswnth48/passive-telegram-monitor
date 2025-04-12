@@ -1,0 +1,33 @@
+# Private individual user cursor rules
+.cursor/rules/_*.mdc
+
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Runtime files
+*.log
+
+# Telegram session files
+sessions/
+
+# IDE files (example for VSCode)
+.vscode/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.cursor/
+memory-bank/
+docs/
+xnotes/
+.cursorrules
