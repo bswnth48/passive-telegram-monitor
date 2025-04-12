@@ -1,0 +1,8 @@
+fastapi
+telethon
+python-dotenv
+requests # For webhooks
+uvicorn[standard] # For running FastAPI
+
+# Optional (uncomment if used)
+# redis
