@@ -20,11 +20,13 @@ FORWARD_TARGET_USER_ID = 1137119534 # Your User ID
 
 # --- State Variable --- (Consider moving to a class if state grows)
 is_forwarding_active = True # Start with forwarding enabled
-# ---------------------
+
+# Store the bot's own user ID to prevent self-processing
+_BOT_USER_ID = None
 
 async def handle_new_message(event):
     """Handles incoming messages: logs, processes commands, forwards notifications if active."""
-    global is_forwarding_active # Allow modification of the global flag
+    global is_forwarding_active, _BOT_USER_ID
 
     sender = None # Initialize sender
     message = event.message # Get the message object
@@ -199,6 +201,14 @@ async def handle_new_message(event):
                  return # Stop processing after handling command
         # --- End Command Processing ---
 
+        # --- Prevent processing bot's own outgoing messages (unless it's a command) ---
+        # We check _BOT_USER_ID which should be set when the observer starts
+        if _BOT_USER_ID is not None and sender_id == _BOT_USER_ID:
+             # Allow processing commands sent by the bot owner to self, handled above.
+             # Ignore other self-sent messages.
+            logger.debug(f"Ignoring self-sent message {message.id}")
+            return
+
         # 5. Send Custom Formatted Notification
         if is_forwarding_active and FORWARD_TARGET_USER_ID and event.client:
             notification_sent = False
@@ -263,6 +273,7 @@ async def handle_new_message(event):
 
 async def start_observer(config: Config):
     """Initializes, starts the Telegram client, joins configured groups, and observes."""
+    global _BOT_USER_ID # Allow setting the global bot user ID
     session_name = f"sessions/{config.bot_name.lower()}_session"
     logger.info(f"Initializing TelegramClient with session: {session_name}")
 
@@ -304,14 +315,15 @@ async def start_observer(config: Config):
         return
 
     # Register the event handler for new messages
-    client.add_event_handler(handle_new_message, events.NewMessage(incoming=True))
-    logger.info("Registered new message handler.")
+    client.add_event_handler(handle_new_message, events.NewMessage())
+    logger.info("Registered new message handler for all messages.")
 
     # Start the client context manager
     async with client:
         logger.info(f"Telegram client started for bot: {config.bot_name}")
         me = await client.get_me()
-        logger.info(f"Logged in as: {me.username} (ID: {me.id})")
+        _BOT_USER_ID = me.id # Store bot's own ID
+        logger.info(f"Logged in as: {me.username} (ID: {_BOT_USER_ID})")
 
         # Join configured groups
         if config.telegram_groups:
