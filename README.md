@@ -89,8 +89,9 @@ Send these commands from the Telegram account used to log in (e.g., in your "Sav
 
 **Monitoring Scope:**
 *   `/monitor_add <chat_id or username/link>`: Add a specific chat to the monitor list. Once the list is populated, only messages from these chats will be processed.
-*   `/monitor_remove <chat_id or username/link>`: Remove a chat from the monitor list. If the list becomes empty, all chats will be processed again.
+*   `/monitor_remove <chat_id or username/link>`: Remove a chat from the monitor list.
 *   `/monitor_list`: Show the list of currently monitored chats.
+*   `/monitor_clear`: Clears the entire monitor list, reverting to processing messages from all chats.
 
 **Summarization:**
 *   `/summary_today`: Requests an AI-generated summary of messages logged today (requires AI env vars to be set).

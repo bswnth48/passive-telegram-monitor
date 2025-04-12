@@ -13,7 +13,7 @@ from .config import Config
 from .logger import (
     log_message, mark_message_forwarded, get_unforwarded_summary, get_messages_since,
     add_monitored_chat, remove_monitored_chat, list_monitored_chats,
-    is_chat_monitored, is_any_chat_monitored # New monitor functions
+    is_chat_monitored, is_any_chat_monitored, clear_monitored_chats # New monitor functions
 )
 from .summarizer import get_ai_summary
 
@@ -256,6 +256,16 @@ async def handle_new_message(event):
                 else:
                     await event.reply("No chats are specifically monitored. All incoming messages are processed.")
                 return
+
+            # --- New Clear Command ---
+            elif command == '/monitor_clear':
+                deleted_count = await clear_monitored_chats()
+                if deleted_count >= 0:
+                    await event.reply(f"OK. Cleared {deleted_count} monitored chats. Now monitoring all chats.")
+                else:
+                    await event.reply("Error clearing monitored chats list.")
+                return
+            # -------------------------
         # --- End Command Processing ---
 
         # --- Monitoring Check ---

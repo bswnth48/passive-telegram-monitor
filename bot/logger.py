@@ -303,6 +303,19 @@ async def is_any_chat_monitored() -> bool:
         logger.error(f"Error checking if any chat is monitored: {e}", exc_info=True)
         return False # Default to false (effectively monitor all) on error
 
+async def clear_monitored_chats():
+    """Removes all entries from the monitored chats list."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("DELETE FROM monitored_chats")
+            await db.commit()
+            deleted_count = cursor.rowcount
+            logger.info(f"Cleared {deleted_count} entries from monitored_chats table.")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"Error clearing monitored chats: {e}", exc_info=True)
+        return -1 # Indicate error
+
 # -------------------------------
 
 # Example test remains largely the same but needs updates if testing new fields
