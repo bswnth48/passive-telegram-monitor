@@ -10,7 +10,11 @@ from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMe
 from datetime import datetime, date, time # Import date/time for summary command
 
 from .config import Config
-from .logger import log_message, mark_message_forwarded, get_unforwarded_summary, get_messages_since
+from .logger import (
+    log_message, mark_message_forwarded, get_unforwarded_summary, get_messages_since,
+    add_monitored_chat, remove_monitored_chat, list_monitored_chats,
+    is_chat_monitored, is_any_chat_monitored # New monitor functions
+)
 from .summarizer import get_ai_summary
 
 logger = logging.getLogger(__name__)
@@ -151,7 +155,11 @@ async def handle_new_message(event):
         # --- Command Processing --- (Only if message is from the target user)
         if sender_id == FORWARD_TARGET_USER_ID:
             command_text = text.strip().lower() if text else ""
-            if command_text == '/stop_forwarding':
+            parts = command_text.split(maxsplit=1)
+            command = parts[0] if parts else ""
+            args = parts[1] if len(parts) > 1 else ""
+
+            if command == '/stop_forwarding':
                 if is_forwarding_active:
                     is_forwarding_active = False
                     await event.reply("OK. Message notifications stopped.")
@@ -160,7 +168,7 @@ async def handle_new_message(event):
                     await event.reply("Notifications are already stopped.")
                 return # Stop processing after handling command
 
-            elif command_text == '/start_forwarding':
+            elif command == '/start_forwarding':
                 if not is_forwarding_active:
                     is_forwarding_active = True
                     logger.info(f"Forwarding started by user {FORWARD_TARGET_USER_ID}.")
@@ -178,7 +186,7 @@ async def handle_new_message(event):
                     await event.reply("Notifications are already active.")
                 return # Stop processing after handling command
 
-            elif command_text == '/summary_today':
+            elif command == '/summary_today':
                  await event.reply("Generating today's summary from AI... please wait.")
                  logger.info(f"Summary requested by user {FORWARD_TARGET_USER_ID}.")
                  # Calculate start of today
@@ -196,13 +204,74 @@ async def handle_new_message(event):
                  else:
                      await event.reply("Error: Could not access bot configuration for AI settings.")
                  return # Stop processing after handling command
+
+            # --- New Monitor Commands ---
+            elif command == '/monitor_add':
+                if not args:
+                    await event.reply("Usage: /monitor_add <chat_id or username/link>")
+                    return
+                try:
+                    target_chat = await event.client.get_entity(args)
+                    await add_monitored_chat(target_chat.id, getattr(target_chat, 'title', None), getattr(target_chat, 'username', None))
+                    await event.reply(f"OK. Added chat '{getattr(target_chat, 'title', args)}' (ID: {target_chat.id}) to monitor list.")
+                except ValueError:
+                    await event.reply(f"Error: Could not find chat '{args}'. Please provide a valid ID, username, or link.")
+                except Exception as e:
+                    await event.reply(f"Error adding chat: {e}")
+                    logger.error(f"Error in /monitor_add: {e}", exc_info=True)
+                return
+
+            elif command == '/monitor_remove':
+                if not args:
+                    await event.reply("Usage: /monitor_remove <chat_id or username/link>")
+                    return
+                try:
+                    # Try resolving as int first, then as entity
+                    try:
+                        chat_id_to_remove = int(args)
+                        removed = await remove_monitored_chat(chat_id_to_remove)
+                    except ValueError:
+                        target_chat = await event.client.get_entity(args)
+                        removed = await remove_monitored_chat(target_chat.id)
+
+                    if removed:
+                        await event.reply(f"OK. Removed chat '{args}' from monitor list.")
+                    else:
+                        await event.reply(f"Chat '{args}' was not found in the monitor list.")
+                except ValueError:
+                     await event.reply(f"Error: Could not find chat '{args}'. Please provide a valid ID, username, or link.")
+                except Exception as e:
+                    await event.reply(f"Error removing chat: {e}")
+                    logger.error(f"Error in /monitor_remove: {e}", exc_info=True)
+                return
+
+            elif command == '/monitor_list':
+                monitored = await list_monitored_chats()
+                if monitored:
+                    lines = ["Currently Monitored Chats:"]
+                    for chat in monitored:
+                        display = chat['title'] or chat['username'] or f"ID:{chat['chat_id']}"
+                        lines.append(f"- {display} (ID: {chat['chat_id']})")
+                    await event.reply("\n".join(lines))
+                else:
+                    await event.reply("No chats are specifically monitored. All incoming messages are processed.")
+                return
         # --- End Command Processing ---
 
-        # --- Prevent processing bot's own outgoing messages (unless it's a command) ---
-        # We check _BOT_USER_ID which should be set when the observer starts
+        # --- Monitoring Check ---
+        # Check if *any* chats are monitored. If yes, check if *this* chat is monitored.
+        should_process = True # Default to process
+        if await is_any_chat_monitored():
+             if not await is_chat_monitored(message.chat_id):
+                 logger.debug(f"Ignoring message from non-monitored chat {message.chat_id}")
+                 should_process = False
+
+        if not should_process:
+            return # Exit if not processing this chat
+        # -----------------------
+
+        # --- Prevent self-processing --- (Moved after monitor check)
         if _BOT_USER_ID is not None and sender_id == _BOT_USER_ID:
-             # Allow processing commands sent by the bot owner to self, handled above.
-             # Ignore other self-sent messages.
             logger.debug(f"Ignoring self-sent message {message.id}")
             return
 

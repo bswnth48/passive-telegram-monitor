@@ -60,7 +60,17 @@ async def initialize_db():
                 FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE SET NULL
             )
             """)
-            # TODO: Add ALTER TABLE statements here if we need to update existing tables non-destructively
+
+            # --- New Table: Monitored Chats ---
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS monitored_chats (
+                chat_id INTEGER PRIMARY KEY,
+                title TEXT,          -- Store for easier listing
+                username TEXT,       -- Store for easier listing
+                added_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+            # --------------------------------
 
             await db.commit()
             logger.info(f"Database initialized successfully at {DB_PATH}")
@@ -220,6 +230,80 @@ async def get_db_stats() -> Dict[str, int]:
         logger.error(f"Unexpected error getting stats: {e}", exc_info=True)
         # Return default stats on error
     return stats
+
+# --- Monitored Chat Functions ---
+
+async def add_monitored_chat(chat_id: int, title: str | None, username: str | None):
+    """Adds a chat to the monitored list."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+            INSERT INTO monitored_chats (chat_id, title, username)
+            VALUES (?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET title=excluded.title, username=excluded.username;
+            """, (chat_id, title, username))
+            await db.commit()
+            logger.info(f"Added/Updated monitored chat: ID={chat_id}, Title={title}, Username={username}")
+    except Exception as e:
+        logger.error(f"Error adding monitored chat {chat_id}: {e}", exc_info=True)
+
+async def remove_monitored_chat(chat_id: int):
+    """Removes a chat from the monitored list."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute("DELETE FROM monitored_chats WHERE chat_id = ?", (chat_id,))
+            await db.commit()
+            if cursor.rowcount > 0:
+                logger.info(f"Removed monitored chat: ID={chat_id}")
+                return True
+            else:
+                logger.warning(f"Attempted to remove non-monitored chat: ID={chat_id}")
+                return False
+    except Exception as e:
+        logger.error(f"Error removing monitored chat {chat_id}: {e}", exc_info=True)
+        return False
+
+async def list_monitored_chats() -> List[Dict[str, Any]]:
+    """Lists all currently monitored chats."""
+    chats = []
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            query = "SELECT chat_id, title, username, added_timestamp FROM monitored_chats ORDER BY added_timestamp DESC"
+            async with db.execute(query) as cursor:
+                async for row in cursor:
+                    chats.append({
+                        "chat_id": row[0],
+                        "title": row[1],
+                        "username": row[2],
+                        "added_timestamp": row[3]
+                    })
+    except Exception as e:
+        logger.error(f"Error listing monitored chats: {e}", exc_info=True)
+    return chats
+
+async def is_chat_monitored(chat_id: int) -> bool:
+    """Checks if a specific chat ID is in the monitored list."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM monitored_chats WHERE chat_id = ? LIMIT 1", (chat_id,)) as cursor:
+                result = await cursor.fetchone()
+                return bool(result)
+    except Exception as e:
+        logger.error(f"Error checking if chat {chat_id} is monitored: {e}", exc_info=True)
+        return False # Default to false on error
+
+async def is_any_chat_monitored() -> bool:
+    """Checks if the monitored list is currently populated."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM monitored_chats LIMIT 1") as cursor:
+                result = await cursor.fetchone()
+                return bool(result)
+    except Exception as e:
+        logger.error(f"Error checking if any chat is monitored: {e}", exc_info=True)
+        return False # Default to false (effectively monitor all) on error
+
+# -------------------------------
 
 # Example test remains largely the same but needs updates if testing new fields
 if __name__ == '__main__':
