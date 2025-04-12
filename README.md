@@ -96,63 +96,11 @@ Send these commands from the Telegram account used to log in (e.g., in your "Sav
 **Summarization:**
 *   `/summary_today`: Requests an AI-generated summary of messages logged today (requires AI env vars to be set).
 
+**Help:**
+*   `/help`: Shows a list of available commands.
+
 ## Running with Docker
 
 Or with Docker:
 
-```bash
-docker build -t assetmatic-micro-1 .
-docker run -d --name assetmatic-bot --env-file .env assetmatic-micro-1
 ```
-
-## Project Structure
-
-```
-assetmatic-micro-1/
-├── api/             # FastAPI endpoints
-│   └── main.py      # FastAPI app instance and routes
-├── bot/             # Telegram bot logic
-│   ├── config.py    # Configuration loading
-│   ├── logger.py    # Data logging (SQLite)
-│   ├── observer.py  # Telegram message observer & command handler
-│   └── summarizer.py # AI summarization logic
-├── data/            # Database files (ignored by git)
-├── sessions/        # Telegram session files (ignored by git)
-├── tests/           # Unit/integration tests (TODO)
-├── .env.example     # Example environment file (TODO)
-├── .gitignore       # Git ignore configuration
-├── .cursorignore    # Cursor AI ignore config
-├── .cursorrules     # Cursor AI rules
-├── .devcontainer/   # Codespaces config
-├── main.py          # Main entry point
-├── Dockerfile       # Docker configuration
-├── requirements.txt # Python dependencies
-└── README.md        # This file
-```
-
-## Configuration Options
-
-Loaded from the `.env` file:
-
-*   `API_ID`, `API_HASH`: Telegram API credentials (**Required**).
-*   `BOT_NAME`: Name for the bot instance/session (Default: `DefaultBotName`).
-*   `WEBHOOK_URL`: Target for future webhook feature (**Required Placeholder**).
-*   `WEBHOOK_INTERVAL_MINUTES`: Interval for future webhook (Default: `60`).
-*   `TELEGRAM_GROUPS`: Comma-separated public group URLs to join (Optional).
-*   `AI_API_BASE`, `AI_API_KEY`: AI service endpoint and key (**Required for `/summary_today`**).
-*   `AI_MODEL_NAME`: AI model for summarization (Default: `gemini-pro`).
-
-## Development
-
-This project is configured for GitHub Codespaces. Opening it in Codespaces will automatically set up the development environment.
-
-For local development:
-
-1.  Clone the repository.
-2.  Follow the Setup and Installation steps (including Conda environment and `.env` file).
-3.  Activate the Conda environment (`conda activate assetmatic_env`).
-4.  Run the bot: `python main.py`
-
-## License
-
-Proprietary - Assetmatic Internal Use Only

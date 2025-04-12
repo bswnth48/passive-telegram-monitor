@@ -265,6 +265,29 @@ async def handle_new_message(event):
                 else:
                     await event.reply("Error clearing monitored chats list.")
                 return
+
+            # --- New Help Command ---
+            elif command == '/help':
+                help_text = """**Available Commands:**
+
+**Notifications:**
+`/stop_forwarding` - Pause sending notifications for new messages.
+`/start_forwarding` - Resume notifications (shows summary of missed).
+
+**Monitoring Scope:**
+`/monitor_add <id/user/link>` - Monitor only this specific chat.
+`/monitor_remove <id/user/link>` - Stop monitoring this specific chat.
+`/monitor_list` - Show chats currently being monitored.
+`/monitor_clear` - Monitor all chats again (clears the specific list).
+
+**Summarization:**
+`/summary_today` - Get AI summary of today's messages.
+
+**Help:**
+`/help` - Show this help message.
+"""
+                await event.reply(help_text, parse_mode='md') # Use Markdown for formatting
+                return
             # -------------------------
         # --- End Command Processing ---
 
