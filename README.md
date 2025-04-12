@@ -155,7 +155,7 @@ graph TD
     F --> G
     F --> H
     F --> I
-    F -- processes --> J
+    F -- "processes" --> J
     G --> M
     H --> M
     I --> M
