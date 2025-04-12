@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 FORWARD_TARGET_USER_ID = 1137119534 # Your User ID
 
 async def handle_new_message(event):
-    """Handles incoming messages, logs rich data, and forwards the original message."""
+    """Handles incoming messages, logs rich data, and sends a custom formatted notification."""
     sender = None # Initialize sender
     message = event.message # Get the message object
     try:
@@ -138,26 +138,55 @@ async def handle_new_message(event):
             media_info=media_info
         )
 
-        # 5. Forward the *original* message
+        # 5. Send Custom Formatted Notification
         if FORWARD_TARGET_USER_ID and event.client:
             try:
-                await event.client.forward_messages(
-                    entity=FORWARD_TARGET_USER_ID,  # Who to forward to (your User ID)
-                    messages=message,           # The specific message object to forward
-                    from_peer=event.chat_id      # The chat where the message originated
+                # Construct the custom message string
+                sender_display = f"{sender_first_name or ''} {sender_last_name or ''}".strip()
+                sender_display = sender_display or sender_username or f"ID:{sender_id}" if sender_id else "(Unknown Sender)"
+                if sender_is_bot:
+                    sender_display += " [Bot]"
+
+                chat_display = chat_title or chat_username or f"ID:{chat_id}"
+
+                # Add indicators for links/media
+                content_indicators = []
+                if serializable_entities:
+                    if any(e.get('type') == 'url' or e.get('type') == 'text_link' for e in serializable_entities):
+                         content_indicators.append("🔗Links")
+                if media_type:
+                    content_indicators.append(f"🖼️Media ({media_type})")
+                indicator_str = f" [{', '.join(content_indicators)}]" if content_indicators else ""
+
+                forward_header = f"✉️ Received Msg{indicator_str}\nFrom: {chat_display} ({chat_type})\nBy: {sender_display}\nTime: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\nRef: {message_id} / {chat_id}\n---"
+
+                # Include text, or placeholder if only media
+                forward_body = text or f"(No text content - Media Type: {media_type or 'Unknown'})"
+                forward_message = f"{forward_header}\n{forward_body}"
+
+                # Limit message length
+                max_len = 4000
+                if len(forward_message) > max_len:
+                    forward_message = forward_message[:max_len] + "... (truncated)"
+
+                # Use send_message instead of forward_messages
+                await event.client.send_message(
+                    entity=FORWARD_TARGET_USER_ID,
+                    message=forward_message,
+                    link_preview=False # Disable previews for cleaner look
                 )
-                logger.debug(f"Forwarded message {message_id} from {chat_id} to {FORWARD_TARGET_USER_ID}")
+                logger.debug(f"Sent notification for message {message_id} from {chat_id} to {FORWARD_TARGET_USER_ID}")
 
             except UserIsBlockedError:
-                logger.warning(f"Cannot forward message: User {FORWARD_TARGET_USER_ID} has blocked this bot/user.")
+                logger.warning(f"Cannot send notification: User {FORWARD_TARGET_USER_ID} has blocked this bot/user.")
             except FloodWaitError as e:
-                 logger.warning(f"Flood wait error while forwarding message. Waiting {e.seconds} seconds.")
+                 logger.warning(f"Flood wait error while sending notification. Waiting {e.seconds} seconds.")
                  await asyncio.sleep(e.seconds + 1)
             except Exception as e:
                 # Catch potential errors during forwarding (e.g., message deleted before forwarding)
-                logger.error(f"Error forwarding message {message_id} from {chat_id}: {e}", exc_info=True)
+                logger.error(f"Error sending notification for message {message_id} from {chat_id}: {e}", exc_info=True)
         elif not event.client:
-            logger.warning("event.client not available, cannot forward message.")
+            logger.warning("event.client not available, cannot send notification.")
 
     except Exception as e:
         # Catch errors during message processing/logging itself
