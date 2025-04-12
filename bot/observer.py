@@ -9,7 +9,8 @@ from telethon.tl.types import PeerUser, PeerChat, PeerChannel
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
 
 from .config import Config
-from .logger import log_message # Import the logging function
+from .logger import log_message, mark_message_forwarded, get_unforwarded_summary, get_messages_today
+from .summarizer import get_ai_summary
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,14 @@ logger = logging.getLogger(__name__)
 # Replace with the actual User ID where messages should be sent
 FORWARD_TARGET_USER_ID = 1137119534 # Your User ID
 
+# --- State Variable --- (Consider moving to a class if state grows)
+is_forwarding_active = True # Start with forwarding enabled
+# ---------------------
+
 async def handle_new_message(event):
-    """Handles incoming messages, logs rich data, and sends a custom formatted notification."""
+    """Handles incoming messages: logs, processes commands, forwards notifications if active."""
+    global is_forwarding_active # Allow modification of the global flag
+
     sender = None # Initialize sender
     message = event.message # Get the message object
     try:
@@ -138,8 +145,63 @@ async def handle_new_message(event):
             media_info=media_info
         )
 
+        # --- Command Processing --- (Only if message is from the target user)
+        if sender_id == FORWARD_TARGET_USER_ID:
+            command_text = text.strip().lower()
+            if command_text == '/stop_forwarding':
+                if is_forwarding_active:
+                    is_forwarding_active = False
+                    await event.reply("OK. Message notifications stopped.")
+                    logger.info(f"Forwarding stopped by user {FORWARD_TARGET_USER_ID}.")
+                else:
+                    await event.reply("Notifications are already stopped.")
+                return # Stop processing after handling command
+
+            elif command_text == '/start_forwarding':
+                if not is_forwarding_active:
+                    is_forwarding_active = True
+                    logger.info(f"Forwarding started by user {FORWARD_TARGET_USER_ID}.")
+                    # Get summary of missed messages
+                    summary_data = await get_unforwarded_summary()
+                    if summary_data:
+                        summary_lines = ["Missed message summary:"]
+                        for chat, count in summary_data.items():
+                            summary_lines.append(f"- {chat}: {count} unread")
+                        summary_text = "\n".join(summary_lines)
+                    else:
+                        summary_text = "No unread messages found since forwarding stopped."
+                    await event.reply(f"OK. Message notifications started.\n\n{summary_text}")
+                else:
+                    await event.reply("Notifications are already active.")
+                return # Stop processing after handling command
+
+            elif command_text == '/summary_today':
+                 await event.reply("Generating today's summary from AI... please wait.")
+                 logger.info(f"Summary requested by user {FORWARD_TARGET_USER_ID}.")
+                 today_messages = await get_messages_today()
+                 # Need config for AI call - how to pass it here?
+                 # Simplest: Reload config or make it global/accessible
+                 # Let's assume config is accessible somehow (e.g., passed to handler or global)
+                 # WARNING: Making config global isn't ideal. Refactor later if needed.
+                 # temp_config = load_config() # Inefficient - avoid if possible
+                 # Need a better way to access config here, maybe pass client.config?
+                 # For now, we skip calling AI if config isn't readily available.
+                 # TODO: Refactor to pass config properly or access via client
+                 client_config = getattr(event.client, 'app_config', None)
+                 if client_config:
+                     ai_summary = await get_ai_summary(client_config, today_messages)
+                     if ai_summary:
+                         await event.reply(f"AI Summary for Today:\n---\n{ai_summary}")
+                     else:
+                         await event.reply("Could not generate AI summary.")
+                 else:
+                     await event.reply("Error: Could not access bot configuration for AI settings.")
+                 return # Stop processing after handling command
+        # --- End Command Processing ---
+
         # 5. Send Custom Formatted Notification
-        if FORWARD_TARGET_USER_ID and event.client:
+        if is_forwarding_active and FORWARD_TARGET_USER_ID and event.client:
+            notification_sent = False
             try:
                 # Construct the custom message string
                 sender_display = f"{sender_first_name or ''} {sender_last_name or ''}".strip()
@@ -175,6 +237,7 @@ async def handle_new_message(event):
                     message=forward_message,
                     link_preview=False # Disable previews for cleaner look
                 )
+                notification_sent = True # Mark as successful
                 logger.debug(f"Sent notification for message {message_id} from {chat_id} to {FORWARD_TARGET_USER_ID}")
 
             except UserIsBlockedError:
@@ -185,6 +248,10 @@ async def handle_new_message(event):
             except Exception as e:
                 # Catch potential errors during forwarding (e.g., message deleted before forwarding)
                 logger.error(f"Error sending notification for message {message_id} from {chat_id}: {e}", exc_info=True)
+
+            # 6. Mark message as forwarded in DB if notification was sent
+            if notification_sent:
+                await mark_message_forwarded(chat_id, message_id)
         elif not event.client:
             logger.warning("event.client not available, cannot send notification.")
 
@@ -205,6 +272,8 @@ async def start_observer(config: Config):
 
     # Connect and retry if needed
     client = TelegramClient(session_name, config.api_id, config.api_hash)
+    # Add config to client instance for access in event handler
+    client.app_config = config
     for attempt in range(max_retries):
         try:
             await client.connect()
@@ -235,7 +304,7 @@ async def start_observer(config: Config):
         return
 
     # Register the event handler for new messages
-    client.add_event_handler(handle_new_message, events.NewMessage())
+    client.add_event_handler(handle_new_message, events.NewMessage(incoming=True))
     logger.info("Registered new message handler.")
 
     # Start the client context manager

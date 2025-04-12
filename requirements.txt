@@ -7,5 +7,8 @@ uvicorn[standard] # For running FastAPI
 # Database
 aiosqlite
 
+# AI
+openai
+
 # Optional (uncomment if used)
 # redis

@@ -3,7 +3,7 @@ import logging
 import os
 import aiosqlite
 import json # For serializing entities/media info
-from datetime import datetime
+from datetime import datetime, date, time, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ async def initialize_db():
             """)
 
             # Create messages table (if not exists)
-            # Added entities, media_type, media_info
+            # Added entities, media_type, media_info, forwarded_to_user
             await db.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 message_id INTEGER NOT NULL,
@@ -53,6 +53,7 @@ async def initialize_db():
                 entities TEXT, -- JSON formatted list of entities
                 media_type TEXT, -- e.g., 'photo', 'video', 'document'
                 media_info TEXT, -- JSON formatted media details
+                forwarded_to_user INTEGER DEFAULT 0 NOT NULL, -- 0=No, 1=Yes
                 PRIMARY KEY (chat_id, message_id),
                 FOREIGN KEY (chat_id) REFERENCES chats(chat_id) ON DELETE CASCADE,
                 FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE SET NULL
@@ -99,7 +100,7 @@ async def log_message(chat_id: int, chat_type: str, chat_title: str | None,
             entities_json = json.dumps(entities) if entities else None
             media_info_json = json.dumps(media_info) if media_info else None
 
-            # Insert message with new fields
+            # Insert message, forwarded_to_user defaults to 0
             await db.execute("""
             INSERT INTO messages (message_id, chat_id, sender_id, timestamp, text, entities, media_type, media_info)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -113,6 +114,74 @@ async def log_message(chat_id: int, chat_type: str, chat_title: str | None,
         logger.error(f"Database error logging message {message_id} in chat {chat_id}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Unexpected error logging message {message_id} in chat {chat_id}: {e}", exc_info=True)
+
+async def mark_message_forwarded(chat_id: int, message_id: int):
+    """Marks a specific message as forwarded in the database."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+            UPDATE messages
+            SET forwarded_to_user = 1
+            WHERE chat_id = ? AND message_id = ? AND forwarded_to_user = 0
+            """, (chat_id, message_id))
+            await db.commit()
+            logger.debug(f"Marked message {message_id} in chat {chat_id} as forwarded.")
+    except sqlite3.Error as e:
+        logger.error(f"DB error marking message {message_id}/{chat_id} forwarded: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Unexpected error marking message {message_id}/{chat_id} forwarded: {e}", exc_info=True)
+
+async def get_unforwarded_summary() -> dict:
+    """Gets a summary of unforwarded messages (e.g., count per chat)."""
+    summary = {}
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            query = """
+            SELECT c.title, c.username, c.chat_id, COUNT(m.message_id) as unforwarded_count
+            FROM messages m
+            JOIN chats c ON m.chat_id = c.chat_id
+            WHERE m.forwarded_to_user = 0
+            GROUP BY m.chat_id
+            ORDER BY unforwarded_count DESC;
+            """
+            async with db.execute(query) as cursor:
+                async for row in cursor:
+                    title, username, chat_id, count = row
+                    chat_display = title or username or f"ID:{chat_id}"
+                    summary[chat_display] = count
+            logger.info(f"Generated summary for {len(summary)} chats with unforwarded messages.")
+    except sqlite3.Error as e:
+        logger.error(f"DB error getting unforwarded summary: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Unexpected error getting unforwarded summary: {e}", exc_info=True)
+    return summary
+
+async def get_messages_today() -> list[str]:
+    """Retrieves the text content of messages logged today."""
+    messages = []
+    try:
+        today_start = datetime.combine(date.today(), time.min)
+        async with aiosqlite.connect(DB_PATH) as db:
+            query = """
+            SELECT m.text, c.title as chat_title, u.first_name as sender_name
+            FROM messages m
+            LEFT JOIN chats c ON m.chat_id = c.chat_id
+            LEFT JOIN users u ON m.sender_id = u.user_id
+            WHERE m.timestamp >= ? AND m.text IS NOT NULL AND LENGTH(m.text) > 0
+            ORDER BY m.timestamp ASC;
+            """
+            async with db.execute(query, (today_start,)) as cursor:
+                async for row in cursor:
+                    text, chat_title, sender_name = row
+                    # Simple formatting for context
+                    prefix = f"[{chat_title or 'Unknown Chat'}/{sender_name or 'Unknown Sender'}]: "
+                    messages.append(prefix + text)
+            logger.info(f"Retrieved {len(messages)} messages from today for summarization.")
+    except sqlite3.Error as e:
+        logger.error(f"DB error getting today's messages: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Unexpected error getting today's messages: {e}", exc_info=True)
+    return messages
 
 # Example test remains largely the same but needs updates if testing new fields
 if __name__ == '__main__':
