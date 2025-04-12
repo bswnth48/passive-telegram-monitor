@@ -2,7 +2,7 @@ import logging
 import asyncio # Added for potential delays
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.errors import FloodWaitError, UserAlreadyParticipantError, ChannelsTooMuchError, ChannelInvalidError, ChannelPrivateError, InviteHashExpiredError
+from telethon.errors import FloodWaitError, UserAlreadyParticipantError, ChannelsTooMuchError, ChannelInvalidError, ChannelPrivateError, InviteHashExpiredError, UserIsBlockedError
 # Peer types for type checking
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
 
@@ -11,8 +11,13 @@ from .logger import log_message # Import the logging function
 
 logger = logging.getLogger(__name__)
 
+# Define the target user ID for forwarding messages
+# Replace with the actual User ID where messages should be sent
+FORWARD_TARGET_USER_ID = 1137119534 # Your User ID
+
 async def handle_new_message(event):
-    """Handles incoming messages and logs them to the database."""
+    """Handles incoming messages, logs them, and forwards them to a target user."""
+    sender = None # Initialize sender
     try:
         # 1. Get Sender Info (can be None for channel posts)
         sender = await event.get_sender()
@@ -71,9 +76,50 @@ async def handle_new_message(event):
             text=text
         )
 
+        # 5. Forward Message to Target User
+        if FORWARD_TARGET_USER_ID:
+            try:
+                # Construct a formatted message for forwarding
+                sender_display = f"{sender_first_name or ''} {sender_last_name or ''}".strip()
+                sender_display = sender_display or sender_username or f"ID:{sender_id}"
+                if sender_is_bot:
+                    sender_display += " [Bot]"
+
+                chat_display = chat_title or chat_username or f"ID:{chat_id}"
+
+                forward_header = f"💬 Msg From: {chat_display} ({chat_type})\n👤 Sender: {sender_display}\n⏰ Time: {timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n🔗 Msg ID: {message_id} in {chat_id}\n---"
+
+                forward_message = f"{forward_header}\n{text or '(No text content - possibly media)'}"
+
+                # Limit message length to avoid Telegram limits
+                max_len = 4000 # Slightly less than 4096 limit for safety
+                if len(forward_message) > max_len:
+                    forward_message = forward_message[:max_len] + "... (truncated)"
+
+                # Send the formatted message
+                # Ensure the client is available via event
+                if event.client:
+                    await event.client.send_message(
+                        entity=FORWARD_TARGET_USER_ID,
+                        message=forward_message,
+                        # link_preview=False # Optional: disable link previews
+                    )
+                    logger.debug(f"Forwarded message {message_id} from {chat_id} to {FORWARD_TARGET_USER_ID}")
+                else:
+                     logger.warning("event.client not available, cannot forward message.")
+
+            except UserIsBlockedError:
+                logger.warning(f"Cannot forward message: User {FORWARD_TARGET_USER_ID} has blocked this bot/user.")
+                # Optionally, stop trying to forward temporarily or permanently
+            except FloodWaitError as e:
+                 logger.warning(f"Flood wait error while forwarding message. Waiting {e.seconds} seconds.")
+                 await asyncio.sleep(e.seconds + 1)
+            except Exception as e:
+                logger.error(f"Error forwarding message {message_id} from {chat_id}: {e}", exc_info=True)
+
     except Exception as e:
         # Catch errors during message handling/logging
-        logger.error(f"Error handling message {getattr(event, 'message_id', '?')}: {e}", exc_info=True)
+        logger.error(f"Error processing message event {getattr(event, 'message_id', '?')}: {e}", exc_info=True)
 
     # TODO: Implement logic to check against webhook triggers based on the logged data or event
 
