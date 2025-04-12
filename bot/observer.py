@@ -133,25 +133,6 @@ async def handle_new_message(event):
             f"MsgID {message_id}"
         )
 
-        # 4. Log to Database
-        await log_message(
-            chat_id=chat_id,
-            chat_type=chat_type,
-            chat_title=chat_title,
-            chat_username=chat_username,
-            sender_id=sender_id,
-            sender_username=sender_username,
-            sender_first_name=sender_first_name,
-            sender_last_name=sender_last_name,
-            sender_is_bot=sender_is_bot,
-            message_id=message_id,
-            timestamp=timestamp,
-            text=text,
-            entities=serializable_entities, # Pass the serializable list
-            media_type=media_type,
-            media_info=media_info
-        )
-
         # --- Command Processing --- (Only if message is from the target user)
         if sender_id == FORWARD_TARGET_USER_ID:
             command_text = text.strip().lower() if text else ""
@@ -292,23 +273,54 @@ async def handle_new_message(event):
         # --- End Command Processing ---
 
         # --- Monitoring Check ---
-        # Check if *any* chats are monitored. If yes, check if *this* chat is monitored.
-        should_process = True # Default to process
-        if await is_any_chat_monitored():
-             if not await is_chat_monitored(message.chat_id):
-                 logger.debug(f"Ignoring message from non-monitored chat {message.chat_id}")
+        should_process = True
+        any_monitored = await is_any_chat_monitored()
+        # DEBUG LOG
+        logger.debug(f"[Msg {message_id}/{chat_id}] is_any_chat_monitored: {any_monitored}")
+        if any_monitored:
+             is_monitored = await is_chat_monitored(chat_id)
+             # DEBUG LOG
+             logger.debug(f"[Msg {message_id}/{chat_id}] is_chat_monitored({chat_id}): {is_monitored}")
+             if not is_monitored:
                  should_process = False
 
         if not should_process:
-            return # Exit if not processing this chat
+            # DEBUG LOG
+            logger.debug(f"[Msg {message_id}/{chat_id}] Skipping processing due to monitor list.")
+            return
         # -----------------------
 
-        # --- Prevent self-processing --- (Moved after monitor check)
+        # --- Prevent self-processing ---
         if _BOT_USER_ID is not None and sender_id == _BOT_USER_ID:
-            logger.debug(f"Ignoring self-sent message {message.id}")
+            logger.debug(f"[Msg {message_id}/{chat_id}] Ignoring self-sent message.")
             return
 
-        # 5. Send Custom Formatted Notification
+        # --- Regular Message Processing ---
+        # DEBUG LOG
+        logger.debug(f"[Msg {message_id}/{chat_id}] Passed initial checks, proceeding to log.")
+
+        # 1. Log to Database
+        await log_message(
+            chat_id=chat_id,
+            chat_type=chat_type,
+            chat_title=chat_title,
+            chat_username=chat_username,
+            sender_id=sender_id,
+            sender_username=sender_username,
+            sender_first_name=sender_first_name,
+            sender_last_name=sender_last_name,
+            sender_is_bot=sender_is_bot,
+            message_id=message_id,
+            timestamp=timestamp,
+            text=text,
+            entities=serializable_entities, # Pass the serializable list
+            media_type=media_type,
+            media_info=media_info
+        )
+
+        # 2. Send Custom Notification IF forwarding is active
+        # DEBUG LOG
+        logger.debug(f"[Msg {message_id}/{chat_id}] Checking forwarding: is_forwarding_active={is_forwarding_active}")
         if is_forwarding_active and FORWARD_TARGET_USER_ID and event.client:
             notification_sent = False
             try:
@@ -346,8 +358,8 @@ async def handle_new_message(event):
                     message=forward_message,
                     link_preview=False # Disable previews for cleaner look
                 )
-                notification_sent = True # Mark as successful
-                logger.debug(f"Sent notification for message {message_id} from {chat_id} to {FORWARD_TARGET_USER_ID}")
+                notification_sent = True
+                logger.info(f"[Msg {message_id}/{chat_id}] Notification sent successfully.") # Use INFO for success
 
             except UserIsBlockedError:
                 logger.warning(f"Cannot send notification: User {FORWARD_TARGET_USER_ID} has blocked this bot/user.")
@@ -355,14 +367,15 @@ async def handle_new_message(event):
                  logger.warning(f"Flood wait error while sending notification. Waiting {e.seconds} seconds.")
                  await asyncio.sleep(e.seconds + 1)
             except Exception as e:
-                # Catch potential errors during forwarding (e.g., message deleted before forwarding)
-                logger.error(f"Error sending notification for message {message_id} from {chat_id}: {e}", exc_info=True)
+                # DEBUG LOG + ERROR LOG
+                logger.error(f"[Msg {message_id}/{chat_id}] Failed to send notification: {e}", exc_info=True)
 
-            # 6. Mark message as forwarded in DB if notification was sent
+            # 3. Mark message as forwarded in DB if notification was sent
             if notification_sent:
                 await mark_message_forwarded(chat_id, message_id)
-        elif not event.client:
-            logger.warning("event.client not available, cannot send notification.")
+        else:
+            # DEBUG LOG
+            logger.debug(f"[Msg {message_id}/{chat_id}] Skipping notification (forwarding_active={is_forwarding_active}, client_exists={bool(event.client)})." )
 
     except Exception as e:
         # Catch errors during message processing/logging itself
