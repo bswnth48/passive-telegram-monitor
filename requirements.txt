@@ -4,5 +4,8 @@ python-dotenv
 requests # For webhooks
 uvicorn[standard] # For running FastAPI
 
+# Database
+aiosqlite
+
 # Optional (uncomment if used)
 # redis
