@@ -7,9 +7,10 @@ from telethon.errors import FloodWaitError, UserAlreadyParticipantError, Channel
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
 # Import specific media types for checking
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
+from datetime import datetime, date, time # Import date/time for summary command
 
 from .config import Config
-from .logger import log_message, mark_message_forwarded, get_unforwarded_summary, get_messages_today
+from .logger import log_message, mark_message_forwarded, get_unforwarded_summary, get_messages_since
 from .summarizer import get_ai_summary
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,7 @@ async def handle_new_message(event):
 
         # --- Command Processing --- (Only if message is from the target user)
         if sender_id == FORWARD_TARGET_USER_ID:
-            command_text = text.strip().lower()
+            command_text = text.strip().lower() if text else ""
             if command_text == '/stop_forwarding':
                 if is_forwarding_active:
                     is_forwarding_active = False
@@ -180,22 +181,18 @@ async def handle_new_message(event):
             elif command_text == '/summary_today':
                  await event.reply("Generating today's summary from AI... please wait.")
                  logger.info(f"Summary requested by user {FORWARD_TARGET_USER_ID}.")
-                 today_messages = await get_messages_today()
-                 # Need config for AI call - how to pass it here?
-                 # Simplest: Reload config or make it global/accessible
-                 # Let's assume config is accessible somehow (e.g., passed to handler or global)
-                 # WARNING: Making config global isn't ideal. Refactor later if needed.
-                 # temp_config = load_config() # Inefficient - avoid if possible
-                 # Need a better way to access config here, maybe pass client.config?
-                 # For now, we skip calling AI if config isn't readily available.
-                 # TODO: Refactor to pass config properly or access via client
+                 # Calculate start of today
+                 today_start = datetime.combine(date.today(), time.min)
+                 # Use get_messages_since with today's start time
+                 messages_to_summarize = await get_messages_since(today_start)
+
                  client_config = getattr(event.client, 'app_config', None)
                  if client_config:
-                     ai_summary = await get_ai_summary(client_config, today_messages)
-                     if ai_summary:
+                     ai_summary = await get_ai_summary(client_config, messages_to_summarize)
+                     if ai_summary and not ai_summary.startswith("Error") and not ai_summary.startswith("AI summarization not configured") and not ai_summary.startswith("No new messages") :
                          await event.reply(f"AI Summary for Today:\n---\n{ai_summary}")
                      else:
-                         await event.reply("Could not generate AI summary.")
+                         await event.reply(f"Could not generate AI summary: {ai_summary}") # Show reason
                  else:
                      await event.reply("Error: Could not access bot configuration for AI settings.")
                  return # Stop processing after handling command
