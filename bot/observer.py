@@ -3,22 +3,79 @@ import asyncio # Added for potential delays
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.errors import FloodWaitError, UserAlreadyParticipantError, ChannelsTooMuchError, ChannelInvalidError, ChannelPrivateError, InviteHashExpiredError
+# Peer types for type checking
+from telethon.tl.types import PeerUser, PeerChat, PeerChannel
+
 from .config import Config
+from .logger import log_message # Import the logging function
 
 logger = logging.getLogger(__name__)
 
 async def handle_new_message(event):
-    """Handles incoming messages."""
-    # Basic logging for now. More detailed logging/processing will be added later.
-    sender = await event.get_sender()
-    chat = await event.get_chat()
-    logger.info(
-        f"New message in chat '{getattr(chat, 'title', chat.id)}' (ID: {chat.id}) "
-        f"from user '{getattr(sender, 'username', sender.id)}' (ID: {sender.id}): "
-        f"Message ID {event.message.id}"
-    )
-    # TODO: Implement data extraction and logging via bot.logger
-    # TODO: Implement logic to check against webhook triggers
+    """Handles incoming messages and logs them to the database."""
+    try:
+        # 1. Get Sender Info (can be None for channel posts)
+        sender = await event.get_sender()
+        sender_id = getattr(sender, 'id', None)
+        sender_username = getattr(sender, 'username', None)
+        sender_first_name = getattr(sender, 'first_name', None)
+        sender_last_name = getattr(sender, 'last_name', None)
+        sender_is_bot = getattr(sender, 'bot', False)
+
+        # 2. Get Chat Info
+        chat = await event.get_chat()
+        chat_id = event.chat_id
+        chat_title = getattr(chat, 'title', None) # Title for groups/channels
+        chat_username = getattr(chat, 'username', None)
+
+        # Determine chat type
+        if isinstance(event.peer_id, PeerUser):
+            chat_type = 'user'
+            # For DMs, use sender's name as title if chat title is None
+            if not chat_title and sender:
+                 chat_title = f"{sender_first_name or ''} {sender_last_name or ''}".strip()
+        elif isinstance(event.peer_id, PeerChat):
+            chat_type = 'group' # Legacy group
+        elif isinstance(event.peer_id, PeerChannel):
+            # Could be supergroup or channel - check 'broadcast' flag
+            chat_type = 'channel' if getattr(chat, 'broadcast', False) else 'group'
+        else:
+            chat_type = 'unknown'
+
+        # 3. Get Message Info
+        message = event.message
+        message_id = message.id
+        timestamp = message.date # Already a datetime object
+        text = message.text # Or message.message
+
+        # Basic console logging (optional, can be removed later)
+        logger.info(
+            f"New message in {chat_type} '{chat_title or chat_username}' (ID: {chat_id}) "
+            f"from user '{sender_username or sender_id}' (ID: {sender_id}): "
+            f"MsgID {message_id}"
+        )
+
+        # 4. Log to Database
+        await log_message(
+            chat_id=chat_id,
+            chat_type=chat_type,
+            chat_title=chat_title,
+            chat_username=chat_username,
+            sender_id=sender_id,
+            sender_username=sender_username,
+            sender_first_name=sender_first_name,
+            sender_last_name=sender_last_name,
+            sender_is_bot=sender_is_bot,
+            message_id=message_id,
+            timestamp=timestamp,
+            text=text
+        )
+
+    except Exception as e:
+        # Catch errors during message handling/logging
+        logger.error(f"Error handling message {getattr(event, 'message_id', '?')}: {e}", exc_info=True)
+
+    # TODO: Implement logic to check against webhook triggers based on the logged data or event
 
 async def start_observer(config: Config):
     """Initializes, starts the Telegram client, joins configured groups, and observes."""

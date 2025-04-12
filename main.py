@@ -6,6 +6,7 @@ from bot.config import load_config, Config
 
 # Bot logic
 from bot.observer import start_observer
+from bot.logger import initialize_db # Import the initializer
 
 # Placeholder for API logic
 # from api import main as api_main # Assuming FastAPI app is in api/main.py
@@ -17,6 +18,14 @@ async def launch_bot():
     """
     Main entry point to launch the bot instance based on environment configuration.
     """
+    # 1. Initialize Database
+    try:
+        await initialize_db()
+    except Exception as e:
+        logger.critical(f"Database initialization failed: {e}. Cannot proceed.", exc_info=True)
+        return # Stop if DB init fails
+
+    # 2. Load Configuration
     config: Config
     try:
         config = load_config()
@@ -30,6 +39,7 @@ async def launch_bot():
 
     logger.info(f"Launching bot instance: {config.bot_name}")
 
+    # 3. Start Observer
     try:
         # Start the Telegram observer
         await start_observer(config)
