@@ -1,13 +1,15 @@
 import asyncio
 import logging
 import uvicorn # Need uvicorn to run FastAPI
+from datetime import datetime, timedelta
 
 # Configuration loading
 from bot.config import load_config, Config
 
 # Bot logic
 from bot.observer import start_observer
-from bot.logger import initialize_db # Import the initializer
+from bot.logger import initialize_db, get_new_messages_summary_since # Updated logger import
+from bot.webhook import send_webhook # Import webhook sender
 
 # API logic
 from api.main import app as fastapi_app # Import the FastAPI app instance
@@ -16,12 +18,62 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 # Silence noisy uvicorn logs unless needed
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+# Potentially silence httpx logs too if they become noisy
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+# --- Webhook Scheduler Task ---
+async def webhook_scheduler(config: Config):
+    """Periodically fetches new message summary and sends webhook."""
+    if not config.webhook_url or config.webhook_interval_minutes <= 0:
+        logger.warning("Webhook URL or interval not configured/invalid. Scheduler will not run.")
+        return
+
+    interval_seconds = config.webhook_interval_minutes * 60
+    last_check_time = datetime.utcnow() # Start checking from now
+
+    logger.info(f"Webhook scheduler started. Interval: {config.webhook_interval_minutes} minutes.")
+
+    while True:
+        try:
+            await asyncio.sleep(interval_seconds)
+            current_check_time = datetime.utcnow()
+            logger.info(f"Webhook interval elapsed. Fetching messages since {last_check_time}...")
+
+            # Fetch summary of messages logged since the last check
+            message_summary = await get_new_messages_summary_since(last_check_time)
+
+            if message_summary["total_new_messages"] > 0:
+                logger.info(f"Found {message_summary['total_new_messages']} new messages. Sending webhook...")
+                # Payload includes the summary dict directly
+                webhook_payload = {
+                    "type": "message_summary",
+                    "data": message_summary
+                }
+                success = await send_webhook(config, webhook_payload)
+                if success:
+                    # Update last_check_time only if webhook was sent successfully
+                    last_check_time = current_check_time
+                else:
+                    logger.warning("Webhook send failed. Will retry with same data next interval.")
+            else:
+                logger.info("No new messages found since last check. Skipping webhook.")
+                # Update time even if no messages, so we don't query increasingly large ranges
+                last_check_time = current_check_time
+
+        except asyncio.CancelledError:
+            logger.info("Webhook scheduler task cancelled.")
+            break # Exit loop on cancellation
+        except Exception as e:
+            # Log unexpected errors in the scheduler loop but continue running
+            logger.error(f"Error in webhook scheduler loop: {e}", exc_info=True)
+            # Optional: Add a small delay before retrying after an error
+            await asyncio.sleep(60)
+
 async def launch_bot_and_api():
     """
-    Initializes DB, loads config, and runs the Bot Observer and FastAPI server concurrently.
+    Initializes DB, loads config, and runs the Bot Observer, FastAPI server, and Webhook Scheduler concurrently.
     """
     # 1. Initialize Database
     try:
@@ -55,16 +107,17 @@ async def launch_bot_and_api():
     )
     api_server = uvicorn.Server(uvicorn_config)
 
-    # 4. Run Observer and API concurrently
+    # 4. Create Tasks for Observer, API, and Scheduler
     observer_task = asyncio.create_task(start_observer(config), name="TelegramObserver")
     api_task = asyncio.create_task(api_server.serve(), name="APIServer")
+    scheduler_task = asyncio.create_task(webhook_scheduler(config), name="WebhookScheduler")
 
-    logger.info("Starting Telegram Observer and API server...")
+    logger.info("Starting Telegram Observer, API server, and Webhook Scheduler...")
 
-    # Wait for either task to complete (or fail)
-    # Using asyncio.wait to handle completion/cancellation gracefully
+    # Wait for any task to complete (or fail)
+    tasks = [observer_task, api_task, scheduler_task]
     done, pending = await asyncio.wait(
-        [observer_task, api_task],
+        tasks,
         return_when=asyncio.FIRST_COMPLETED,
     )
 

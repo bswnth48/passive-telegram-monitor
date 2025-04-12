@@ -2,6 +2,7 @@ fastapi
 telethon
 python-dotenv
 requests # For webhooks
+httpx # For async webhook calls
 uvicorn[standard] # For running FastAPI
 
 # Database

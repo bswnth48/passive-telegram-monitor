@@ -4,6 +4,7 @@ import os
 import aiosqlite
 import json # For serializing entities/media info
 from datetime import datetime, date, time, timedelta
+from typing import Dict, List, Tuple # Added for type hints
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,7 @@ async def mark_message_forwarded(chat_id: int, message_id: int):
     except Exception as e:
         logger.error(f"Unexpected error marking message {message_id}/{chat_id} forwarded: {e}", exc_info=True)
 
-async def get_unforwarded_summary() -> dict:
+async def get_unforwarded_summary() -> Dict[str, int]:
     """Gets a summary of unforwarded messages (e.g., count per chat)."""
     summary = {}
     try:
@@ -156,7 +157,7 @@ async def get_unforwarded_summary() -> dict:
         logger.error(f"Unexpected error getting unforwarded summary: {e}", exc_info=True)
     return summary
 
-async def get_messages_today() -> list[str]:
+async def get_messages_today() -> List[str]:
     """Retrieves the text content of messages logged today."""
     messages = []
     try:
@@ -182,6 +183,37 @@ async def get_messages_today() -> list[str]:
     except Exception as e:
         logger.error(f"Unexpected error getting today's messages: {e}", exc_info=True)
     return messages
+
+async def get_new_messages_summary_since(timestamp: datetime) -> Dict[str, any]:
+    """Retrieves a summary of new messages logged since the given timestamp."""
+    summary = {
+        "total_new_messages": 0,
+        "messages_by_chat": {}
+    }
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            query = """
+            SELECT c.title, c.username, m.chat_id, COUNT(m.message_id) as new_count
+            FROM messages m
+            JOIN chats c ON m.chat_id = c.chat_id
+            WHERE m.timestamp > ?
+            GROUP BY m.chat_id
+            ORDER BY new_count DESC;
+            """
+            total_count = 0
+            async with db.execute(query, (timestamp,)) as cursor:
+                async for row in cursor:
+                    title, username, chat_id, count = row
+                    chat_display = title or username or f"ID:{chat_id}"
+                    summary["messages_by_chat"][chat_display] = count
+                    total_count += count
+            summary["total_new_messages"] = total_count
+            logger.info(f"Found {total_count} new messages since {timestamp} across {len(summary['messages_by_chat'])} chats.")
+    except sqlite3.Error as e:
+        logger.error(f"DB error getting messages since {timestamp}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Unexpected error getting messages since {timestamp}: {e}", exc_info=True)
+    return summary
 
 # Example test remains largely the same but needs updates if testing new fields
 if __name__ == '__main__':
