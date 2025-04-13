@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+# Ensure the sessions directory exists
+os.makedirs("sessions", exist_ok=True)
+
 @dataclass
 class Config:
     api_id: int
@@ -17,6 +20,8 @@ class Config:
     ai_api_key: Optional[str] = None
     ai_model_name: str = "gemini-pro"
     webhook_url: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    openrouter_fallback_model: str = "qwen/qwen2.5-vl-3b-instruct:free"
 
 def load_config() -> Config:
     """Loads configuration from environment variables."""
@@ -36,6 +41,14 @@ def load_config() -> Config:
     ai_api_key = os.getenv("AI_API_KEY")
     ai_model_name = os.getenv("AI_MODEL_NAME", "gemini-pro")
 
+    # OpenRouter API Key
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+
+    # OpenRouter Fallback Model
+    openrouter_fallback_model = os.getenv("OPENROUTER_FALLBACK_MODEL", "qwen/qwen2.5-vl-3b-instruct:free")
+    if not openrouter_fallback_model:
+        openrouter_fallback_model = "qwen/qwen2.5-vl-3b-instruct:free"
+
     # --- Validation (Telegram part remains mostly the same) ---
     missing_vars = []
     if not api_id_str: missing_vars.append("API_ID")
@@ -49,6 +62,11 @@ def load_config() -> Config:
         telegram_groups = [group.strip() for group in telegram_groups_str.split(',') if group.strip()]
 
     # Check AI vars only if summarization might be used (optional for basic run)
+    # Log warnings if primary AI or OpenRouter key are missing, but don't block startup
+    if not ai_api_key and not openrouter_api_key:
+        logger.warning("Neither AI_API_KEY nor OPENROUTER_API_KEY are set. AI features (Summary, Query) will likely fail.")
+    elif not ai_api_key:
+        logger.info("AI_API_KEY environment variable is not set. Using OpenRouter as primary AI if configured.")
     # If AI_API_KEY is missing, log a warning but allow running without summarizer
     if not ai_api_key:
         logger.warning("AI_API_KEY environment variable is not set. Summarization feature will be disabled.")
@@ -88,6 +106,7 @@ def load_config() -> Config:
         ai_api_key=ai_api_key,
         ai_model_name=ai_model_name,
         webhook_url=webhook_url,
+        openrouter_api_key=openrouter_api_key,
     )
 
     logger.info(f"Configuration loaded successfully for bot: {config.bot_name}")
