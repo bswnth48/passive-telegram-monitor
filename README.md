@@ -1,6 +1,6 @@
 # Assetmatic Micro 1: Passive Telegram Observation Bot
 
-A modular Python project that creates a passive Telegram bot using a user account. It observes message flow, logs details (including links/media info) to SQLite, and allows for dynamic control via Telegram commands.
+A modular Python project that creates a passive Telegram bot using a user account. It observes message flow, logs details (including links/media info) to SQLite, allows for dynamic control via owner commands, and provides NLP querying of logged messages.
 
 ## Features
 
@@ -9,13 +9,16 @@ A modular Python project that creates a passive Telegram bot using a user accoun
 -   **Dynamic Chat Monitoring:** Control which specific chats are monitored using owner commands (`/monitor_add`, `/monitor_remove`, `/monitor_list`, `/monitor_clear`). Monitors all chats by default if no specific chats are added.
 -   **Multi-Target Notifications:** Forwards customizable notifications for observed messages to one or more configured Telegram users (managed via owner commands).
 -   **Notification Control:** Pause/resume notifications (`/stop_forwarding`, `/start_forwarding`) and manage recipients (`/notify_add`, `/notify_remove`, `/notify_list`) via owner commands.
+-   **Natural Language Querying:** Ask questions about logged messages in natural language using the `/query` command (e.g., `/query links from chat X today`). Requires AI configuration.
 -   **Scheduled AI Summaries:** Periodically generates an AI summary of recent messages and sends it to all configured notification targets (requires AI API configuration in `.env`).
 -   **On-Demand AI Summaries:** Request an AI summary for the current day via the owner command `/summary_today`.
 -   **Scheduled Webhook:** Sends batches of raw message data (logged since the last send) to an external webhook URL at a configured interval (requires `WEBHOOK_URL` and `WEBHOOK_INTERVAL_MINUTES` in `.env`).
 -   **API Monitoring:** Includes a basic FastAPI server with `/health` and `/status` endpoints for monitoring.
 -   **Automatic Group Joining:** Attempts to join public groups/channels listed in the `TELEGRAM_GROUPS` configuration.
+-   **AI Fallback:** Uses OpenRouter as a fallback if the primary configured AI provider fails (requires `OPENROUTER_API_KEY`).
 -   **Modular Design:** Separated components for bot logic, API, database, AI, etc.
 -   **Deployment Ready:** Includes a `Dockerfile` for containerization and GitHub Codespaces configuration.
+-   **Scribe Integration (Planned):** Designed for integration with an internal codegen module (Scribe), though specific requirements are pending.
 
 ## Setup and Installation
 
@@ -201,8 +204,9 @@ Send these commands from the **Owner** account (the account associated with the 
 *   `/monitor_list`: Show the list of currently monitored chats.
 *   `/monitor_clear`: Clears the entire monitor list, reverting to processing messages from all chats.
 
-**Summarization:**
-*   `/summary_today`: Requests an AI-generated summary of messages logged today (requires AI env vars to be set).
+**Summarization & Querying:**
+*   `/summary_today`: Requests an AI-generated summary of messages logged today (requires AI configuration).
+*   `/query <natural language query>`: Ask questions about logged messages (e.g., `/query links from 'Tech News' yesterday`, `/query messages from user @someuser today containing 'update'`). Requires AI configuration.
 
 **Help:**
 *   `/help`: Shows this help message.
@@ -212,7 +216,7 @@ Send these commands from the **Owner** account (the account associated with the 
 When running, the FastAPI server is available (default: `http://localhost:8000` or the mapped Docker port):
 
 *   `GET /health`: Returns `{"status": "ok"}` if the API server is running.
-*   `GET /status`: Returns a JSON object with current bot status, DB stats, and configuration info.
+*   `GET /status`: Returns a JSON object with current bot status (e.g., bot name, API version, configured groups count, DB stats, AI/Webhook config status).
 
 ## Project Structure
 
@@ -291,10 +295,29 @@ flowchart TD
 
 *   **Environment:** Recommended setup uses Conda for managing Python dependencies locally (see Setup). GitHub Codespaces is also configured for a cloud-based environment.
 *   **Branching:** Use standard Git flow (e.g., feature branches, pull requests).
-*   **Testing:** (Add details here if tests are implemented later).
+*   **Testing:** (No automated tests currently implemented).
+*   **Scribe Integration:** Integration with the Scribe codegen module is planned but requires specific instructions/configuration details.
 
 ## License
 
-(Specify License - e.g., MIT License)
+MIT License
 
 Copyright (c) 2025 Assetmatic / Approgramme
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
