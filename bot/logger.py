@@ -3,7 +3,7 @@ import logging
 import os
 import aiosqlite
 import json # For serializing entities/media info
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from typing import Dict, List, Tuple, Any # Added Any
 
 logger = logging.getLogger(__name__)
@@ -411,6 +411,132 @@ async def get_all_notification_target_ids() -> List[int]:
         ids.append(OWNER_USER_ID)
     return list(set(ids)) # Return unique list
 
+# --- Natural Language Query Function ---
+
+async def query_messages(chat_filter: str | int | None = None,
+                         date_filter: str | None = None, # e.g., 'today', 'yesterday', 'YYYY-MM-DD'
+                         content_filter: str | None = None, # e.g., 'links', 'photos', 'text:keyword'
+                         sender_filter: str | int | None = None,
+                         limit: int = 25) -> List[Dict[str, Any]]:
+    """Queries messages based on structured filters, potentially derived from NLP."""
+    results = []
+    params = []
+    where_clauses = ["1=1"] # Start with a valid clause
+
+    # --- Build WHERE clause ---
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+
+            # 1. Filter by Chat
+            if chat_filter:
+                chat_id = None
+                if isinstance(chat_filter, int):
+                    chat_id = chat_filter
+                else:
+                    # Try finding by username or title
+                    async with db.execute("SELECT chat_id FROM chats WHERE username = ? OR title = ? LIMIT 1", (chat_filter, chat_filter)) as cursor:
+                        row = await cursor.fetchone()
+                        if row:
+                            chat_id = row[0]
+                        else:
+                            logger.warning(f"Could not find chat_id for filter: {chat_filter}")
+                            # Optionally try fuzzy matching later if needed
+                            return [] # Return empty if specific chat not found
+                if chat_id:
+                    where_clauses.append("m.chat_id = ?")
+                    params.append(chat_id)
+
+            # 2. Filter by Date
+            if date_filter:
+                start_date = None
+                end_date = None
+                today = datetime.now(timezone.utc).date()
+                if date_filter.lower() == 'today':
+                    start_date = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+                    end_date = start_date + timedelta(days=1)
+                elif date_filter.lower() == 'yesterday':
+                    yesterday = today - timedelta(days=1)
+                    start_date = datetime.combine(yesterday, datetime.min.time(), tzinfo=timezone.utc)
+                    end_date = start_date + timedelta(days=1)
+                else:
+                    try:
+                        # Try parsing as YYYY-MM-DD
+                        specific_date = datetime.strptime(date_filter, '%Y-%m-%d').date()
+                        start_date = datetime.combine(specific_date, datetime.min.time(), tzinfo=timezone.utc)
+                        end_date = start_date + timedelta(days=1)
+                    except ValueError:
+                        logger.warning(f"Could not parse date filter: {date_filter}")
+
+                if start_date and end_date:
+                    where_clauses.append("m.timestamp >= ? AND m.timestamp < ?")
+                    params.extend([start_date, end_date])
+
+            # 3. Filter by Sender
+            if sender_filter:
+                sender_id = None
+                if isinstance(sender_filter, int):
+                    sender_id = sender_filter
+                else:
+                     async with db.execute("SELECT user_id FROM users WHERE username = ? LIMIT 1", (sender_filter,)) as cursor:
+                        row = await cursor.fetchone()
+                        if row: sender_id = row[0]
+
+                if sender_id:
+                    where_clauses.append("m.sender_id = ?")
+                    params.append(sender_id)
+                else:
+                    logger.warning(f"Could not find sender_id for filter: {sender_filter}")
+                    return []
+
+            # 4. Filter by Content (Basic examples)
+            content_keyword = None
+            if content_filter:
+                if content_filter.lower() == 'links':
+                    # Broad query, filter links later in Python for simplicity and better JSON handling
+                    where_clauses.append("(m.text LIKE '%http://%' OR m.text LIKE '%https://%' OR json_valid(m.entities))")
+                elif content_filter.lower() == 'photos' or content_filter.lower() == 'images':
+                    where_clauses.append("m.media_type = ?")
+                    params.append('photo')
+                elif content_filter.lower().startswith('text:'):
+                    content_keyword = content_filter[5:].strip()
+                    if content_keyword:
+                        where_clauses.append("m.text LIKE ?")
+                        params.append(f'%{content_keyword}%')
+                    else:
+                         logger.warning("Empty keyword provided for text filter.")
+                # Add more content filters here (videos, documents, etc.)
+
+            # --- Construct and Execute Query ---
+            # Select necessary fields for processing
+            # Always include text and entities if filtering for links
+            select_fields = "m.message_id, m.chat_id, m.sender_id, m.timestamp, m.text, m.entities, m.media_type, c.title as chat_title, u.username as sender_username"
+
+            sql = f"""
+            SELECT {select_fields}
+            FROM messages m
+            LEFT JOIN chats c ON m.chat_id = c.chat_id
+            LEFT JOIN users u ON m.sender_id = u.user_id
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+            """
+            params.append(limit)
+
+            logger.debug(f"Executing query: {sql} with params: {params}")
+            async with db.execute(sql, params) as cursor:
+                column_names = [desc[0] for desc in cursor.description]
+                async for row in cursor:
+                    results.append(dict(zip(column_names, row)))
+
+            logger.info(f"Query returned {len(results)} messages.")
+
+    except sqlite3.Error as e:
+        logger.error(f"Database query error: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Unexpected error during query: {e}", exc_info=True)
+
+    return results
+
 # -------------------------------
 
 # Example test remains largely the same but needs updates if testing new fields
@@ -425,7 +551,7 @@ if __name__ == '__main__':
         await log_message(
             chat_id=-100123456, chat_type='group', chat_title='Test Group', chat_username='testgroup',
             sender_id=98765, sender_username='testuser', sender_first_name='Test', sender_last_name='User',
-            sender_is_bot=False, message_id=101, timestamp=datetime.now(), text='Hello from group! http://example.com',
+            sender_is_bot=False, message_id=101, timestamp=datetime.now(timezone.utc) - timedelta(hours=1), text='Hello from group! http://example.com',
             entities=mock_entities, media_type=None, media_info=None
         )
         # Example 2: Message with media (mock photo)
@@ -433,15 +559,23 @@ if __name__ == '__main__':
         await log_message(
             chat_id=-100987654, chat_type='channel', chat_title='Test Channel', chat_username='testchannel',
             sender_id=None, sender_username=None, sender_first_name=None, sender_last_name=None,
-            sender_is_bot=False, message_id=202, timestamp=datetime.now(), text='Test Photo', # Text might be caption
+            sender_is_bot=False, message_id=202, timestamp=datetime.now(timezone.utc) - timedelta(minutes=30), text='Test Photo', # Text might be caption
             entities=None, media_type='photo', media_info=mock_media_info
         )
-        # Example 3: Plain DM
+        # Example 3: Plain DM from today
         await log_message(
             chat_id=12345, chat_type='user', chat_title='Another User', chat_username='anotheruser',
-            sender_id=12345, sender_username='anotheruser', sender_first_name='Another', sender_last_name='User',
-            sender_is_bot=False, message_id=303, timestamp=datetime.now(), text='Direct message',
+            sender_id=12345, sender_username='anotheruser', first_name='Another', last_name='User',
+            sender_is_bot=False, message_id=303, timestamp=datetime.now(timezone.utc), text='Direct message from today',
             entities=None, media_type=None, media_info=None
+        )
+        # Example 4: Message from yesterday with link in entities
+        mock_entities_yesterday = [{'type': 'text_link', 'offset': 5, 'length': 6, 'url': 'http://another.example.com'}]
+        await log_message(
+             chat_id=-100123456, chat_type='group', chat_title='Test Group', chat_username='testgroup',
+             sender_id=1111, sender_username='otheruser', sender_first_name='Other', sender_last_name='Dev',
+             sender_is_bot=False, message_id=404, timestamp=datetime.now(timezone.utc) - timedelta(days=1, hours=2), text='Check this link!',
+             entities=mock_entities_yesterday, media_type=None, media_info=None
         )
 
         # Verify counts
@@ -449,9 +583,18 @@ if __name__ == '__main__':
             async with db.execute("SELECT COUNT(*) FROM messages") as cursor:
                 count = await cursor.fetchone()
                 logger.info(f"Total messages in DB: {count[0]}")
-            # Add verification for new columns if needed
-            # async with db.execute("SELECT text, entities, media_type, media_info FROM messages LIMIT 1") as cursor:
-            #     row = await cursor.fetchone()
-            #     logger.info(f"Sample row: {row}")
+
+        # Test new query function
+        print("--- Testing Query Function ---")
+        q_results_links_today = await query_messages(content_filter='links', date_filter='today')
+        print(f"Links Today Results ({len(q_results_links_today)}): {q_results_links_today}")
+        q_results_photos = await query_messages(content_filter='photos', limit=5)
+        print(f"Photos Results ({len(q_results_photos)}): {q_results_photos}")
+        q_results_group_yesterday = await query_messages(chat_filter='Test Group', date_filter='yesterday')
+        print(f"Group Yesterday Results ({len(q_results_group_yesterday)}): {q_results_group_yesterday}")
+        q_results_keyword = await query_messages(content_filter='text:Direct')
+        print(f"Keyword 'Direct' Results ({len(q_results_keyword)}): {q_results_keyword}")
+        q_results_sender = await query_messages(sender_filter='testuser')
+        print(f"Sender 'testuser' Results ({len(q_results_sender)}): {q_results_sender}")
 
     asyncio.run(test_logging())

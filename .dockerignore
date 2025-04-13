@@ -1,0 +1,35 @@
+# Git files
+.git/
+.gitignore
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+ENV/
+
+# IDE/Editor specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets and session data
+.env
+sessions/
+data/
+
+# Documentation and non-runtime files
+README.md
+memory-bank/
+.devcontainer/
+.dockerignore
+Dockerfile
+
+# Testing artifacts (if any)
+.pytest_cache/
+htmlcov/

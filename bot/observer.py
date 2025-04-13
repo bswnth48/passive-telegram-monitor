@@ -1,5 +1,7 @@
 import logging
 import asyncio # Added for potential delays
+import json # For link extraction from entities
+import re # For link extraction from text
 from telethon import TelegramClient, events
 from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.errors import FloodWaitError, UserAlreadyParticipantError, ChannelsTooMuchError, ChannelInvalidError, ChannelPrivateError, InviteHashExpiredError, UserIsBlockedError
@@ -7,7 +9,7 @@ from telethon.errors import FloodWaitError, UserAlreadyParticipantError, Channel
 from telethon.tl.types import PeerUser, PeerChat, PeerChannel
 # Import specific media types for checking
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument, MessageMediaWebPage
-from datetime import datetime, date, time # Import date/time for summary command
+from datetime import datetime, date, time, timezone # Import date/time for summary command
 
 from .config import Config
 from .logger import (
@@ -16,15 +18,20 @@ from .logger import (
     is_chat_monitored, is_any_chat_monitored, clear_monitored_chats,
     # New target functions
     add_notification_target, remove_notification_target, list_notification_targets,
-    get_all_notification_target_ids, OWNER_USER_ID # Need owner ID for checks
+    get_all_notification_target_ids, OWNER_USER_ID, # Need owner ID for checks
+    # New query function
+    query_messages
 )
-from .summarizer import get_ai_summary
+from .summarizer import get_ai_summary, extract_query_params_from_nlp # Import new NLP function
 
 logger = logging.getLogger(__name__)
 
 # FORWARD_TARGET_USER_ID constant is no longer the primary control, use OWNER_USER_ID instead
 _BOT_USER_ID = None
 is_forwarding_active = True
+
+# Helper to find links in text
+URL_REGEX = r'https?://[^\s<>\"\\\'`]+(?<![.,!?:;\"\\\'`])'
 
 async def handle_new_message(event):
     """Handles incoming messages: logs, processes commands, forwards notifications if active."""
@@ -117,10 +124,15 @@ async def handle_new_message(event):
         if entities:
             serializable_entities = []
             for entity in entities:
-                entity_dict = entity.to_dict()
-                # Remove any non-standard keys if necessary, e.g., '_'
-                entity_dict.pop('_', None)
-                serializable_entities.append(entity_dict)
+                try:
+                    # Use to_dict() and remove internal '_' key
+                    entity_dict = entity.to_dict()
+                    entity_dict.pop('_', None)
+                    serializable_entities.append(entity_dict)
+                except Exception as e:
+                    logger.warning(f"Failed to serialize entity {type(entity)}: {e}")
+                    # Append a placeholder or skip
+                    serializable_entities.append({'type': 'serialization_error', 'repr': repr(entity)})
 
         # Basic console logging (optional, can be removed later)
         logger.info(
@@ -165,18 +177,21 @@ async def handle_new_message(event):
             elif command == '/summary_today':
                  await event.reply("Generating today's summary from AI... please wait.")
                  logger.info(f"Summary requested by user {OWNER_USER_ID}.")
-                 # Calculate start of today
-                 today_start = datetime.combine(date.today(), time.min)
+                 # Calculate start of today in UTC
+                 today_utc = datetime.now(timezone.utc).date()
+                 today_start = datetime.combine(today_utc, time.min, tzinfo=timezone.utc)
+
+                 logger.debug(f"Querying messages for summary since: {today_start}")
                  # Use get_messages_since with today's start time
                  messages_to_summarize = await get_messages_since(today_start)
 
                  client_config = getattr(event.client, 'app_config', None)
                  if client_config:
                      ai_summary = await get_ai_summary(client_config, messages_to_summarize)
-                     if ai_summary and not ai_summary.startswith("Error") and not ai_summary.startswith("AI summarization not configured") and not ai_summary.startswith("No new messages") :
+                     if ai_summary and not ai_summary.startswith(("Error", "AI summarization not configured", "No new messages")):
                          await event.reply(f"AI Summary for Today:\n---\n{ai_summary}")
                      else:
-                         await event.reply(f"Could not generate AI summary: {ai_summary}") # Show reason
+                         await event.reply(f"Could not generate AI summary: {ai_summary or 'Unknown error'}") # Show reason
                  else:
                      await event.reply("Error: Could not access bot configuration for AI settings.")
                  return # Stop processing after handling command
@@ -242,6 +257,95 @@ async def handle_new_message(event):
                     await event.reply("Error clearing monitored chats list.")
                 return
 
+            # --- New Query Command ---
+            elif command == '/query':
+                if not args:
+                    await event.reply("Usage: /query <your natural language query about messages>\nExample: /query show me links from 'Test Group' today")
+                    return
+
+                nlp_query_text = args
+                await event.reply(f"Processing query: '{nlp_query_text}'\nExtracting parameters using AI...")
+
+                client_config = getattr(event.client, 'app_config', None)
+                if not client_config or not client_config.ai_api_base or not client_config.ai_api_key:
+                     await event.reply("Error: AI is not configured. Cannot process NLP query.")
+                     return
+
+                # Call AI to extract parameters
+                extracted_params = await extract_query_params_from_nlp(client_config, nlp_query_text)
+
+                if extracted_params is None: # Indicates AI call failed
+                    await event.reply("Error: Failed to call AI for parameter extraction.")
+                    return
+                if not extracted_params: # Indicates AI could not understand query
+                    await event.reply("Sorry, I couldn't understand that query or map it to filters. Please try rephrasing.")
+                    return
+
+                await event.reply(f"AI Extracted Filters: `{json.dumps(extracted_params)}`\nQuerying database...")
+
+                # Call the database query function
+                query_results = await query_messages(**extracted_params) # Pass extracted params as kwargs
+
+                if not query_results:
+                    await event.reply("No messages found matching your query.")
+                    return
+
+                # Process results
+                response_lines = [f"Query Results ({len(query_results)}):\n---"]
+                output_links_only = extracted_params.get('content_filter', '').lower() == 'links'
+                links_found = set()
+
+                for msg in query_results:
+                    if output_links_only:
+                        # Extract links from text using regex
+                        if msg.get('text'):
+                             links_found.update(re.findall(URL_REGEX, msg['text']))
+                        # Extract links from entities
+                        if msg.get('entities'):
+                            try:
+                                entities_list = json.loads(msg['entities'])
+                                if isinstance(entities_list, list):
+                                    for entity in entities_list:
+                                        if isinstance(entity, dict):
+                                            if entity.get('type') == 'url' and msg.get('text'):
+                                                # Extract URL substring from text based on offset/length
+                                                offset = entity.get('offset', 0)
+                                                length = entity.get('length', 0)
+                                                if length > 0:
+                                                     links_found.add(msg['text'][offset:offset+length])
+                                            elif entity.get('type') == 'text_link' and entity.get('url'):
+                                                links_found.add(entity['url'])
+                            except (json.JSONDecodeError, TypeError):
+                                logger.warning(f"Could not parse entities JSON for link extraction: {msg.get('entities')}")
+                    else:
+                        # Format full message info
+                        ts = msg.get('timestamp', 'Unknown Time')
+                        # Convert from string if needed (assuming query returns string)
+                        if isinstance(ts, str): ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                        ts_str = ts.strftime('%Y-%m-%d %H:%M') if isinstance(ts, datetime) else str(ts)
+                        sender = msg.get('sender_username', f"ID:{msg.get('sender_id', '?')}")
+                        chat = msg.get('chat_title', f"ID:{msg.get('chat_id', '?')}")
+                        text = msg.get('text', '')
+                        media = f" [Media: {msg.get('media_type')}]" if msg.get('media_type') else ""
+                        response_lines.append(f"[{ts_str}] ({chat} by {sender}): {text}{media}")
+
+                # Construct final reply
+                if output_links_only:
+                    if links_found:
+                        response_lines.append("Found Links:")
+                        response_lines.extend(list(links_found))
+                    else:
+                        response_lines.append("No links found in the matching messages.")
+
+                # Send potentially long messages in chunks
+                full_response = "\n".join(response_lines)
+                max_len = 4000 # Telegram message limit
+                for i in range(0, len(full_response), max_len):
+                    chunk = full_response[i:i+max_len]
+                    await event.reply(chunk)
+
+                return # Stop processing after handling query
+
             # --- New Help Command ---
             elif command == '/help':
                 help_text = """**Available Commands (Owner Only):**
@@ -262,6 +366,9 @@ async def handle_new_message(event):
 **Summarization:**
 `/summary_today` - Get AI summary of today's messages.
 
+**Querying:**
+`/query <natural language query>` - Ask questions about logged messages (e.g., `/query links from channel X yesterday`, `/query messages from user Y today containing 'keyword'`).
+
 **Help:**
 `/help` - Show this help message.
 """
@@ -275,22 +382,43 @@ async def handle_new_message(event):
                     return
                 try:
                     target_user = await event.client.get_entity(args)
-                    if not isinstance(target_user, PeerUser) and not getattr(target_user, 'user_id', None):
-                         await event.reply("Error: Please provide a valid user ID or username.")
-                         return
-                    user_id = target_user.id if hasattr(target_user, 'id') else target_user.user_id
+                    # Check if it's a user
+                    if not isinstance(target_user, (PeerUser, User)) and not getattr(target_user, 'user_id', None):
+                         # Try resolving ID directly if get_entity gave channel/chat
+                         try:
+                             target_id_int = int(args)
+                             target_user = await event.client.get_entity(PeerUser(target_id_int))
+                         except (ValueError, TypeError):
+                             target_user = None # Could not resolve as user
+
+                         if not target_user:
+                             await event.reply("Error: Please provide a valid user ID or username.")
+                             return
+
+                    user_id = target_user.id if hasattr(target_user, 'id') else getattr(target_user, 'user_id', None)
                     username = getattr(target_user, 'username', None)
                     first_name = getattr(target_user, 'first_name', None)
+
+                    if not user_id:
+                        await event.reply("Error: Could not determine User ID.")
+                        return
 
                     success = await add_notification_target(user_id, username, first_name)
                     if success:
                          await event.reply(f"OK. Added notification target: {first_name or username or user_id} (ID: {user_id})")
                     else:
-                         await event.reply(f"User {user_id} is the owner and cannot be added again.")
+                         # Check if it failed because it was the owner
+                         if user_id == OWNER_USER_ID:
+                              await event.reply("Owner is already a notification target.")
+                         else:
+                              await event.reply(f"Failed to add target {user_id}. It might already be added or an error occurred.")
                 except ValueError:
-                    await event.reply(f"Error: Could not find user '{args}'.")
+                    await event.reply(f"Error: Could not find user '{args}'. Please provide a valid user ID or username.")
+                except UserIsBlockedError:
+                    await event.reply(f"Error: Cannot interact with blocked user '{args}'.") # More specific error
                 except Exception as e:
                     await event.reply(f"Error adding notification target: {e}")
+                    logger.error(f"Error in /notify_add for '{args}': {e}", exc_info=True)
                 return
 
             elif command == '/notify_remove':
@@ -303,20 +431,24 @@ async def handle_new_message(event):
                         target_id = int(args)
                     except ValueError:
                         target_user = await event.client.get_entity(args)
-                        if not isinstance(target_user, PeerUser) and not getattr(target_user, 'user_id', None):
-                             await event.reply("Error: Please provide a valid user ID or username.")
-                             return
-                        target_id = target_user.id if hasattr(target_user, 'id') else target_user.user_id
+                        target_id = getattr(target_user, 'id', None) or getattr(target_user, 'user_id', None)
+                        if not target_id:
+                            await event.reply("Error: Could not determine User ID from the provided argument.")
+                            return
 
                     success = await remove_notification_target(target_id)
                     if success:
                         await event.reply(f"OK. Removed notification target: {args}")
                     else:
-                        await event.reply(f"Could not remove target {args}. Ensure it exists and is not the owner.")
+                        if target_id == OWNER_USER_ID:
+                            await event.reply("Cannot remove the owner from notification targets.")
+                        else:
+                            await event.reply(f"Could not remove target {args}. Ensure it exists and is not the owner.")
                 except ValueError:
-                     await event.reply(f"Error: Could not find user '{args}'.")
+                     await event.reply(f"Error: Could not find user '{args}'. Please provide a valid user ID or username.")
                 except Exception as e:
                     await event.reply(f"Error removing notification target: {e}")
+                    logger.error(f"Error in /notify_remove for '{args}': {e}", exc_info=True)
                 return
 
             elif command == '/notify_list':
@@ -338,17 +470,17 @@ async def handle_new_message(event):
         should_process = True
         any_monitored = await is_any_chat_monitored()
         # DEBUG LOG
-        logger.debug(f"[Msg {message_id}/{chat_id}] is_any_chat_monitored: {any_monitored}")
+        # logger.debug(f"[Msg {message_id}/{chat_id}] is_any_chat_monitored: {any_monitored}")
         if any_monitored:
              is_monitored = await is_chat_monitored(chat_id)
              # DEBUG LOG
-             logger.debug(f"[Msg {message_id}/{chat_id}] is_chat_monitored({chat_id}): {is_monitored}")
+             # logger.debug(f"[Msg {message_id}/{chat_id}] is_chat_monitored({chat_id}): {is_monitored}")
              if not is_monitored:
                  should_process = False
 
         if not should_process:
             # DEBUG LOG
-            logger.debug(f"[Msg {message_id}/{chat_id}] Skipping processing due to monitor list.")
+            # logger.debug(f"[Msg {message_id}/{chat_id}] Skipping processing due to monitor list.")
             return
         # -----------------------
 
@@ -359,7 +491,7 @@ async def handle_new_message(event):
 
         # --- Regular Message Processing ---
         # DEBUG LOG
-        logger.debug(f"[Msg {message_id}/{chat_id}] Passed initial checks, proceeding to log.")
+        # logger.debug(f"[Msg {message_id}/{chat_id}] Passed initial checks, proceeding to log.")
 
         # 1. Log to Database
         await log_message(
@@ -400,7 +532,7 @@ async def handle_new_message(event):
             # Add indicators for links/media
             content_indicators = []
             if serializable_entities:
-                if any(e.get('type') == 'url' or e.get('type') == 'text_link' for e in serializable_entities):
+                if any(e.get('type') in ['url', 'text_link'] for e in serializable_entities if isinstance(e, dict)):
                      content_indicators.append("🔗Links")
             if media_type:
                 content_indicators.append(f"🖼️Media ({media_type})")
@@ -413,7 +545,7 @@ async def handle_new_message(event):
             forward_message = f"{forward_header}\n{forward_body}"
 
             # Limit message length
-            max_len = 4000
+            max_len = 4000 # Reduced slightly from absolute max
             if len(forward_message) > max_len:
                 forward_message = forward_message[:max_len] + "... (truncated)"
 
@@ -471,7 +603,12 @@ async def start_observer(client: TelegramClient):
             logger.error(f"Error getting self user in start_observer: {e}")
 
     # --- Group Joining Logic --- (Moved back here)
-    config = client.app_config # Get config attached to client
+    config = getattr(client, 'app_config', None)
+    if not config:
+         logger.error("Configuration not found on client object in start_observer.")
+         # Decide how to handle this - maybe stop?
+         return
+
     if config.telegram_groups:
         logger.info(f"Attempting to join configured groups: {config.telegram_groups}")
         joined_groups = 0
@@ -492,6 +629,8 @@ async def start_observer(client: TelegramClient):
             except ChannelsTooMuchError:
                 logger.error("Cannot join more groups. Account limit reached.")
                 failed_groups.append(group_identifier)
+                # Stop trying if limit reached
+                break
             except FloodWaitError as e:
                 logger.warning(f"Flood wait joining {group_identifier}. Waiting {e.seconds}s.")
                 failed_groups.append(group_identifier)
@@ -499,13 +638,13 @@ async def start_observer(client: TelegramClient):
             except Exception as e:
                 logger.error(f"Failed to join group {group_identifier}: {e}", exc_info=True)
                 failed_groups.append(group_identifier)
-            await asyncio.sleep(1)
+            await asyncio.sleep(1) # Small delay between join attempts
 
         logger.info(f"Finished group joining. Joined/In {joined_groups} groups.")
         if failed_groups:
             logger.warning(f"Failed to join/process: {failed_groups}")
     else:
-        logger.warning("No TELEGRAM_GROUPS configured.")
+        logger.info("No TELEGRAM_GROUPS configured for auto-joining.") # Changed from warning
     # --- End Group Joining Logic ---
 
     logger.info("Observer ready. Waiting for messages...")
